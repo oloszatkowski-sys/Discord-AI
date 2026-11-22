@@ -1,0 +1,26 @@
+# Środowisko i zależności
+.venv/
+env/
+venv/
+__pycache__/
+*.py[cod]
+
+# Pliki konfiguracyjne i wrażliwe tajemnice (NIGDY nie trafią do Git!)
+.env
+*.token
+*.key
+tokens.txt
+credentials.json
+
+# Ochrona bazy pamięci (Zezwalamy TYLKO na zaszyfrowany plik .enc)
+*.json
+!package.json
+temp_audio/
+*.mp3
+*.wav
+*.ogg
+
+# Logi i pliki tymczasowe
+*.log
+.DS_Store
+Thumbs.db

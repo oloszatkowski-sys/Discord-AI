@@ -1,0 +1,67 @@
+name: AETHER Discord AI Runner
+
+on:
+  workflow_dispatch: # Uruchamianie ręczne z zakładki Actions
+  schedule:
+    # Automatyczny restart co 5 godzin, aby podtrzymać bota 24/7 (limit jednego joba to 6h)
+    - cron: '0 */5 * * *'
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'README.md'
+      - 'knowledge_vault.enc'
+
+permissions:
+  contents: write # Wymagane do automatycznego commitowania zaszyfrowanej bazy pamięci
+
+jobs:
+  run-ai-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320 # Bezpieczny czas pracy jednej sesji (poniżej 6h limitu)
+
+    steps:
+      - name: 📥 Klonowanie Repozytorium
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🐍 Konfiguracja Pythona 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 🎙️ Instalacja FFmpeg i bibliotek audio Opus
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libopus0 libopus-dev
+
+      - name: 📦 Instalacja Zależności Pythona
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 🚀 Start Bota AI (Tekst + Głos proceed + Ciągła Nauka)
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          VAULT_ENCRYPTION_KEY: ${{ secrets.VAULT_ENCRYPTION_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          VOICE_CHANNEL_NAME: ${{ secrets.VOICE_CHANNEL_NAME || 'proceed' }}
+          AUTO_JOIN_VOICE: "true"
+        run: |
+          # Uruchom bota
+          python bot.py
+
+      - name: 🔒 Bezpieczny Zapis Zaszyfrowanej Bazy Pamięci (Zero-Leak)
+        if: always()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -f knowledge_vault.enc ]; then
+            git add knowledge_vault.enc
+            git diff-index --quiet HEAD || git commit -m "Auto-sync encrypted memory vault [skip ci]"
+            git push origin HEAD:${{ github.ref_name }} || echo "Brak nowych zmian w pamięci do zapisania."
+          fi
