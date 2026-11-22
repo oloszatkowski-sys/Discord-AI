@@ -42,6 +42,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: 🛡️ Maskowanie Tajemnic w Logach Runnera (Tarcza Anti-Leak)
+        run: |
+          if [ -n "${{ secrets.DISCORD_TOKEN }}" ]; then echo "::add-mask::${{ secrets.DISCORD_TOKEN }}"; fi
+          if [ -n "${{ secrets.VAULT_ENCRYPTION_KEY }}" ]; then echo "::add-mask::${{ secrets.VAULT_ENCRYPTION_KEY }}"; fi
+          if [ -n "${{ secrets.GROQ_API_KEY }}" ]; then echo "::add-mask::${{ secrets.GROQ_API_KEY }}"; fi
+          if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then echo "::add-mask::${{ secrets.GEMINI_API_KEY }}"; fi
+          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then echo "::add-mask::${{ secrets.OPENAI_API_KEY }}"; fi
+
       - name: 🚀 Start Bota AI (Tekst + Głos proceed + Ciągła Nauka)
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}

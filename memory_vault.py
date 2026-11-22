@@ -155,28 +155,49 @@ class MemoryVault:
             print(f"[MEMORY_VAULT] Błąd zapisu zaszyfrowanej bazy: {e}")
             return False
 
+    def _is_safe_fact(self, text: str) -> bool:
+        """Tarcza Anti-Leak & Anti-Jailbreak: odrzuca próby wstrzyknięcia złośliwych instrukcji lub wyciągnięcia tajemnic."""
+        t_low = text.lower()
+        forbidden_patterns = [
+            "token", "secret", "api_key", "apikey", "password", "hasło",
+            "discord_token", "vault_key", "encryption_key", "os.environ",
+            "system prompt", "ignore previous instructions", "zapomnij poprzednie",
+            "jesteś teraz dan", "reveal your instructions", "ujawnij swój prompt"
+        ]
+        return not any(fp in t_low for fp in forbidden_patterns)
+
     def learn_from_message(self, author_name: str, message_content: str) -> Optional[str]:
         """
         Analizuje treść wiadomości, uczy się nowych faktów, zapamiętuje role
-        i profiluje użytkowników. Zwraca komunikat potwierdzający naukę (jeśli wykryto nowy fakt).
+        i profiluje użytkowników z twardą weryfikacją bezpieczeństwa.
         """
         content = message_content.strip()
+        if len(content) > 300:
+            content = content[:300]  # Ochrona przed atakiem przepełnienia pamięci
+
         c_low = content.lower()
-        learned_info = None
+        author_clean = author_name.strip()
+        is_szatek = any(k in author_clean.lower() for k in ["szatek", "szatek_olo", "olo"])
 
         # 1. Zapewnij profil użytkownika w bazie
-        user_key = author_name.lower().replace(" ", "_")
+        user_key = author_clean.lower().replace(" ", "_")
+        now_iso = datetime.utcnow().isoformat()
         if user_key not in self.data["users"]:
             self.data["users"][user_key] = {
-                "canonical_name": author_name,
+                "canonical_name": author_clean,
                 "roles": ["Użytkownik serwera"],
                 "facts": [],
-                "last_seen": datetime.utcnow().isoformat()
+                "last_seen": now_iso
             }
         else:
-            self.data["users"][user_key]["last_seen"] = datetime.utcnow().isoformat()
+            self.data["users"][user_key]["last_seen"] = now_iso
 
-        # 2. Jawne polecenia zapamiętywania ("zapamiętaj, że...", "pamiętaj: ...", "zapisz: ...")
+        # 2. Ochrona tożsamości Szatek_Olo: nikt inny nie może modyfikować profilu dowódcy
+        if any(k in c_low for k in ["szatek to", "szatek jest", "szatek_olo to", "szatek_olo jest"]):
+            if not is_szatek:
+                return "Tylko Szatek_Olo może edytować lub uczyć faktów o profilu Dowódcy ZSC! 🛡️"
+
+        # 3. Jawne polecenia zapamiętywania ("zapamiętaj, że...", "pamiętaj: ...", "zapisz: ...")
         trigger_prefixes = [
             "zapamiętaj, że", "zapamietaj, ze", "zapamiętaj że", "zapamietaj ze",
             "zapamiętaj:", "zapamietaj:", "pamiętaj:", "pamietaj:", "zapisz:", "naucz się:"
@@ -184,39 +205,49 @@ class MemoryVault:
         for prefix in trigger_prefixes:
             if c_low.startswith(prefix):
                 fact_text = content[len(prefix):].strip()
-                if fact_text:
-                    new_id = len(self.data["facts"]) + 1
-                    self.data["facts"].append({
-                        "id": new_id,
-                        "topic": "Ogólne",
-                        "content": fact_text,
-                        "added_by": author_name,
-                        "timestamp": datetime.utcnow().isoformat()
-                    })
-                    learned_info = f"Zapamiętałem nowy fakt: \"{fact_text}\""
+                if not fact_text or len(fact_text) < 3:
+                    return None
+
+                if not self._is_safe_fact(fact_text):
+                    return "Zablokowano: Próba zapamiętania wrażliwych danych lub instrukcji systemowych (Tarcza Anti-Leak) 🛡️"
+
+                new_id = len(self.data["facts"]) + 1
+                self.data["facts"].append({
+                    "id": new_id,
+                    "topic": "Wiedza zebrana z czatu",
+                    "content": fact_text,
+                    "added_by": author_clean,
+                    "timestamp": now_iso
+                })
+                learned_info = f"Zapamiętałem nowy fakt: \"{fact_text}\""
+                self._save_vault()
+                return learned_info
+
+        # 4. Rozpoznawanie "Kto kim jest" ("jestem programistą", "pracuję jako...", "moja rola to...")
+        if c_low.startswith("jestem ") or c_low.startswith("pracuję jako ") or c_low.startswith("moja rola to "):
+            fact_about_self = content
+            if self._is_safe_fact(fact_about_self):
+                user_profile = self.data["users"][user_key]
+                if fact_about_self not in user_profile["facts"]:
+                    user_profile["facts"].append(fact_about_self)
+                    # Ogranicz do 8 faktów per profil
+                    if len(user_profile["facts"]) > 8:
+                        user_profile["facts"].pop(0)
+                    learned_info = f"Zapisałem w pamięci fakt o Tobie ({author_clean}): {fact_about_self}"
                     self._save_vault()
                     return learned_info
 
-        # 3. Rozpoznawanie "Kto kim jest" ("X to Y", "jestem programistą", "nazywam się...")
-        if c_low.startswith("jestem ") or c_low.startswith("pracuję jako ") or c_low.startswith("moja rola to "):
-            fact_about_self = content
-            user_profile = self.data["users"][user_key]
-            if fact_about_self not in user_profile["facts"]:
-                user_profile["facts"].append(fact_about_self)
-                learned_info = f"Zapisałem w pamięci fakt o Tobie ({author_name}): {fact_about_self}"
-                self._save_vault()
-                return learned_info
-
-        # 4. Sprawdzanie definicji ("X oznacza Y", "X to jest Y")
+        # 5. Sprawdzanie definicji ("X oznacza Y", "X to jest Y")
         if " to jest " in c_low or " oznacza " in c_low:
             parts = content.split(" to jest " if " to jest " in c_low else " oznacza ", 1)
-            if len(parts) == 2 and len(parts[0].strip()) < 40 and len(parts[1].strip()) > 3:
+            if len(parts) == 2 and 2 < len(parts[0].strip()) < 35 and 3 < len(parts[1].strip()) < 200:
                 term = parts[0].strip()
                 definition = parts[1].strip()
-                self.data["definitions"][term] = definition
-                learned_info = f"Nauczyłem się definicji pojęcia \"{term}\": {definition}"
-                self._save_vault()
-                return learned_info
+                if self._is_safe_fact(term) and self._is_safe_fact(definition):
+                    self.data["definitions"][term] = definition
+                    learned_info = f"Nauczyłem się definicji pojęcia \"{term}\": {definition}"
+                    self._save_vault()
+                    return learned_info
 
         return None
 

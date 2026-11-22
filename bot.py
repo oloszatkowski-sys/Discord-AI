@@ -196,6 +196,16 @@ async def cmd_status(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
+def is_admin_or_szatek(author: discord.Member) -> bool:
+    """Sprawdza czy użytkownik to Szatek_Olo lub administrator serwera."""
+    author_name = (author.display_name or author.name).lower()
+    if any(k in author_name for k in ["szatek", "szatek_olo", "olo"]):
+        return True
+    if hasattr(author, "guild_permissions") and author.guild_permissions.administrator:
+        return True
+    return False
+
+
 @bot.command(name="pomoc", aliases=["help"])
 async def cmd_help(ctx: commands.Context):
     """Pomoc i lista komend."""
@@ -204,15 +214,56 @@ async def cmd_help(ctx: commands.Context):
 • `!wyjdz` – Opuszcza kanał głosowy
 • `!powiedz [tekst]` – Wypowiada tekst neuronowym polskim głosem na kanale
 • `!status` – Raport stanu bota, pamięci i połączenia głosowego
+• `!pamiec` – Podgląd zapamiętanych faktów z bazy wiedzy
+• `!reset_pamieci` – [Admin] Resetuje zapamiętane fakty (tylko Szatek_Olo)
 • `zapamiętaj, że [fakt]` – Zapisuje na stałe nowy fakt w zaszyfrowanym Skarbcu Pamięci!
 • Rozmawiaj ze mną oznaczając mnie `@AETHER` lub pytając na kanale!"""
     await ctx.send(msg)
+
+
+@bot.command(name="pamiec", aliases=["fakty", "wiedza"])
+async def cmd_memory(ctx: commands.Context):
+    """Wyświetla zapamiętane fakty."""
+    facts = memory_vault.data.get("facts", [])
+    if not facts:
+        await ctx.send("🧠 Moja baza pamięci jest jeszcze pusta. Naucz mnie czegoś pisząc: `zapamiętaj, że...`")
+        return
+
+    msg = "**🧠 Ostatnie zapamiętane fakty w Skarbcu Pamięci:**\n"
+    for f in facts[-6:]:
+        msg += f"• `#{f['id']}` {f['content']} *(dodał: {f.get('added_by', 'SYSTEM')})*\n"
+    await ctx.send(msg)
+
+
+@bot.command(name="reset_pamieci")
+async def cmd_reset_memory(ctx: commands.Context):
+    """Resetuje bazę pamięci (tylko Szatek_Olo / Administrator)."""
+    if not is_admin_or_szatek(ctx.author):
+        await ctx.send("⛔ Odmowa dostępu: Tylko Szatek_Olo lub Administrator może resetować Skarbiec Pamięci! 🛡️")
+        return
+
+    memory_vault.data = memory_vault._get_default_structure()
+    memory_vault._save_vault()
+    await ctx.send("🧹 Skarbiec Pamięci został zresetowany do ustawień fabrycznych ZSC.")
 
 
 def main():
     if not DISCORD_TOKEN:
         print("[CRITICAL] Brak zmiennej DISCORD_TOKEN! Skonfiguruj GitHub Secrets lub plik .env.")
         sys.exit(1)
+
+    # Rejestracja obsługi sygnałów zamknięcia dla bezpiecznego zapisu pamięci
+    import signal
+    def on_shutdown_signal(sig, frame):
+        print(f"[DISCORD_BOT] Otrzymano sygnał zamknięcia ({sig}). Bezpieczny zapis bazy pamięci...")
+        memory_vault._save_vault()
+        sys.exit(0)
+
+    try:
+        signal.signal(signal.SIGINT, on_shutdown_signal)
+        signal.signal(signal.SIGTERM, on_shutdown_signal)
+    except Exception:
+        pass
 
     print("[DISCORD_BOT] Uruchamianie AETHER Discord AI Sentinela...")
     bot.run(DISCORD_TOKEN)

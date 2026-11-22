@@ -62,9 +62,18 @@ class DiscordVoiceEngine:
         return bool(self.voice_client and self.voice_client.is_connected())
 
     async def enqueue_speech(self, text: str):
-        """Dodaje tekst do kolejki syntezy i odtwarzania na kanale głosowym."""
+        """Dodaje tekst do kolejki syntezy i odtwarzania na kanale głosowym z zabezpieczeniem przed spamem."""
         clean_text = text.strip()
         if not clean_text:
+            return
+
+        # Ochrona DoS: ograniczenie długości pojedynczej wypowiedzi głosowej (max 350 znaków)
+        if len(clean_text) > 350:
+            clean_text = clean_text[:347] + "..."
+
+        # Jeśli kolejka ma już ponad 6 oczekujących komunikatów, odrzuć nowe (ochrona przed spamem audio)
+        if self.speech_queue.qsize() > 6:
+            print("[VOICE_ENGINE] Odrzucono wypowiedź: kolejka audio przepełniona (Ochrona przed spamem).")
             return
 
         # Usuwamy formatowanie markdown (gwiazdki, backticki), które brzmią nienaturalnie przy czytaniu
