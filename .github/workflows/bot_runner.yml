@@ -24,6 +24,10 @@ on:
 permissions:
   contents: write # Wymagane do automatycznego commitowania zaszyfrowanej bazy pamięci
 
+concurrency:
+  group: aether-bot-runner
+  cancel-in-progress: true
+
 jobs:
   run-ai-bot:
     runs-on: ubuntu-latest
