@@ -229,12 +229,13 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             return
 
         # 3. Naturalne polecenia wejścia na kanał głosowy
-        c_low = content.lower()
+        c_low = re.sub(r"[\/\\!\?,\.]", " ", content.lower())
         clean_words = [w.strip() for w in re.sub(r"<@!?\d+>", "", c_low).split() if w.strip()]
         is_join_command = any(p in c_low for p in [
             "dołącz", "dolacz", "wbij", "wbijaj", "wejdź", "wejdz", "chodź", "chodz",
             "wejdź na głosowy", "wejdź na vc", "chodź na vc", "chodź na głosowy",
-            "dołącz na kanał", "wbij na vc", "wbij na dc", "chodź pogadać", "wbij na kanał"
+            "dołącz na kanał", "dolacz na kanal", "dolacz na kanal glosowy", "dołącz na kanał głosowy",
+            "wbij na vc", "wbij na dc", "chodź pogadać", "wbij na kanał"
         ]) or (len(clean_words) == 1 and clean_words[0] in ["dołącz", "dolacz", "wbij", "chodź", "join"])
 
         if is_join_command:
@@ -317,7 +318,7 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
 
     # --- KOMENDY ---
 
-    @bot.command(name="dolacz", aliases=["join", "wbij"])
+    @bot.command(name="dolacz", aliases=["join", "wbij", "dołącz", "wejdz", "wejdź", "chodz", "chodź", "wbijaj"])
     async def cmd_join(ctx: commands.Context, *, channel_name: Optional[str] = None):
         """Dołącza bota do kanału głosowego (domyślnie '🤖・Testowanie・Bota・AI')."""
         target_vc = None
