@@ -254,16 +254,26 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         words_in_msg = re.findall(r"\b\w+\b", c_low)
         starts_or_calls_bot = any(trigger in words_in_msg[:3] for trigger in ["bot", "bocie", "aether", "ai", "chatgpt"]) or any(t in c_low for t in name_triggers)
 
-        # Kontynuacja wątku (dialog w toku w ostatnich 110 sekundach)
-        time_since_reply = conv_tracker.time_since_last_bot_reply(message.channel.id)
-        is_continuation = (time_since_reply < 110.0) and (len(content) > 3) and not content.startswith("http")
+        # Powitania na czacie (siema, elo, hejka, cześć)
+        greetings = ["siema", "siemanko", "hej", "hejka", "elo", "witam", "cześć", "czesc", "yo"]
+        is_greeting = bool(words_in_msg and words_in_msg[0] in greetings)
 
-        # Spontaniczne włączanie się
-        curious_keywords = ["minecraft", "zsc", "szatek", "serwer", "projekt", "budujemy", "zbuduj", "co sądzicie", "jak myślicie", "ciekawe", "co robimy", "?", "kto wie", "pomysł"]
+        # Kontynuacja wątku (dialog w toku w ostatnich 120 sekundach)
+        time_since_reply = conv_tracker.time_since_last_bot_reply(message.channel.id)
+        is_continuation = (time_since_reply < 120.0) and (len(content) > 2) and not content.startswith("http")
+
+        # Spontaniczne włączanie się do dyskusji i pytań graczy
+        question_words = ["?", "co ", "jak ", "kiedy ", "dlaczego ", "gdzie ", "kto ", "czy "]
+        is_question = any(q in c_low for q in question_words)
+        curious_keywords = ["minecraft", "zsc", "szatek", "serwer", "projekt", "budujemy", "zbuduj", "co sądzicie", "jak myślicie", "ciekawe", "co robimy", "pomysł"]
         has_curious_topic = any(k in c_low for k in curious_keywords)
-        can_chime_in = (time_since_reply > 50.0) and (len(content) > 10) and not content.startswith("http")
+
+        can_chime_in = (time_since_reply > 35.0) and (len(content) > 3) and not content.startswith("http")
         spontaneous_trigger = can_chime_in and (
-            (has_curious_topic and random.random() < 0.40) or (random.random() < 0.08)
+            (is_question and random.random() < 0.65) or
+            (has_curious_topic and random.random() < 0.50) or
+            (is_greeting and random.random() < 0.50) or
+            (random.random() < 0.12)
         )
 
         should_respond = is_mentioned or is_reply_to_bot or is_dm or starts_or_calls_bot or is_continuation or spontaneous_trigger
@@ -388,6 +398,17 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         for f in facts[-6:]:
             msg += f"• `#{f['id']}` {f['content']} *(dodał: {f.get('added_by', 'SYSTEM')})*\n"
         await ctx.send(msg)
+
+    @bot.command(name="restart", aliases=["reset", "reboot"])
+    async def cmd_restart(ctx: commands.Context):
+        """Restartuje bota, aby odświeżyć uprawnienia i konfigurację (tylko Szatek_Olo lub Administrator)."""
+        if not is_admin_or_szatek(ctx.author):
+            await ctx.send("⛔ Tylko Szatek_Olo lub Administrator może restartować bota! 🛡️")
+            return
+        await ctx.send("🔄 Restartuję Aether AI w chmurze... Za chwilę wracam ze zaktualizowanymi uprawnieniami!")
+        memory_vault._save_vault()
+        await bot.close()
+        sys.exit(0)
 
     @bot.command(name="reset_pamieci")
     async def cmd_reset_memory(ctx: commands.Context):
