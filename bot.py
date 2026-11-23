@@ -1,16 +1,12 @@
 """
-bot.py - Główny Program Super ChatGPT Bota AI na Discordzie (Żywa Inteligencja + Głos + Multi-Server)
-=====================================================================================================
+bot.py - Główny Program Super ChatGPT Bota AI z Ciepłym Głosem i Odróżnianiem Użytkowników
+==========================================================================================
 Funkcjonalności:
-1. Podział na serwery (Multi-Server Partitioning) – każdy serwer posiada własną, niezależną pamięć,
-   fakty, definicje i profile użytkowników, zachowując globalne lore ZSC i Szatek_Olo.
-2. Rozumienie pełnego kontekstu rozmowy – wieloturowa historia czatu (sliding window), dzięki czemu
-   bot rozumie zaimki ("co o tym myślisz?"), nawiązania i bieg dyskusji.
-3. "On ma żyć" – reaguje gdy ktoś pisze "Bot", "Aether", pinguje go, odpowiada na jego posty,
-   kontynuuje dialog w naturalnym tempie oraz spontanicznie wtrąca się do ciekawych dyskusji.
-4. Zaawansowana integracja głosowa – automatycznie wyszukuje i dołącza do kanałów głosowych
-   (np. '🤖・Testowanie・Bota・AI', 'proceed'), wita użytkowników i czyta odpowiedzi neuronowym głosem TTS.
-5. 100% darmowy chmurowy Super ChatGPT w chmurze (Pollinations GPT-4o mini, Mistral, Groq, Gemini).
+1. Ciepły, naturalny głos neuronowy ChatGPT (pl-PL-ZofiaNeural) na kanale głosowym.
+2. Rozpoznawanie i odróżnianie użytkowników (Szatek_Olo, Janow i inni gracze) w głosie i tekście.
+3. Dedykowane łączenie z kanałem '🤖・Testowanie・Bota・AI' (ID: 1574154874495705108).
+4. Auto-join i żywe przywitanie każdego gracza po imieniu/nicku w momencie wejścia na kanał.
+5. Rozumienie pełnego kontekstu rozmowy wieloturowej i podział pamięci na serwery.
 """
 
 import os
@@ -26,22 +22,29 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from memory_vault import MemoryVault
-from voice_engine import DiscordVoiceEngine
+from voice_engine import DiscordVoiceEngine, DEFAULT_WARM_VOICE
 from ai_brain import AIBrain
+
+# Wymuszenie natychmiastowego wypisywania logów w runnerze GitHub Actions
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
 
 load_dotenv()
 
 DISCORD_TOKEN = (os.getenv("DISCORD_TOKEN") or os.getenv("MANUAL_DISCORD_TOKEN") or "").strip()
-TARGET_VOICE_CHANNEL = os.getenv("VOICE_CHANNEL_NAME", "proceed")
+TARGET_VOICE_CHANNEL_ID = 1574154874495705108  # Dokładne ID kanału 🤖・Testowanie・Bota・AI
+TARGET_VOICE_NAME = "testowanie bota ai"
 AUTO_JOIN_VOICE = os.getenv("AUTO_JOIN_VOICE", "true").lower() in ("true", "1", "yes")
 
 memory_vault = MemoryVault()
-voice_engine = DiscordVoiceEngine(voice_name=os.getenv("TTS_VOICE", "pl-PL-MarekNeural"))
+voice_engine = DiscordVoiceEngine(voice_name=os.getenv("TTS_VOICE", DEFAULT_WARM_VOICE))
 ai_brain = AIBrain()
 
 
 class ConversationTracker:
-    """Zarządza pamięcią podręczną ostatnich wiadomości na każdym kanale tekstowym."""
+    """Śledzi ostatnie wiadomości na kanale, aby model rozumiał pełny kontekst dyskusji."""
     def __init__(self, max_history: int = 15):
         self.channels: Dict[int, deque] = {}
         self.last_bot_reply: Dict[int, float] = {}
@@ -68,60 +71,56 @@ conv_tracker = ConversationTracker()
 
 
 def normalize_channel_name(name: str) -> str:
-    """Oczyszcza nazwę kanału ze znaków specjalnych, emoji i separatorów (np. 🤖・Testowanie・Bota・AI)."""
-    cleaned = re.sub(r"[^\w\s]", " ", name, flags=re.UNICODE)
-    cleaned = cleaned.replace("・", " ").replace("•", " ").replace("-", " ").replace("_", " ")
+    """Czyści nazwę kanału z dowolnych znaków specjalnych i emoji, zamieniając je na spacje."""
+    cleaned = re.sub(r"[^a-zA-Z0-9]", " ", name)
     return " ".join(cleaned.lower().split())
 
 
 def find_best_voice_channel(guild: discord.Guild, preferred_name: Optional[str] = None) -> Optional[discord.VoiceChannel]:
-    """Inteligentnie wyszukuje najlepszy kanał głosowy na serwerze."""
+    """Wyszukuje kanał '🤖・Testowanie・Bota・AI' lub kanał, w którym aktualnie są gracze."""
     if not guild.voice_channels:
         return None
 
-    # 1. Priorytet #1: Kanał, w którym aktualnie siedzą użytkownicy!
+    # 1. Priorytet #1: Kanał, w którym ktoś już siedzi (idź prosto do ludzi!)
     populated = [vc for vc in guild.voice_channels if any(not m.bot for m in vc.members)]
     if populated:
         populated.sort(key=lambda vc: len([m for m in vc.members if not m.bot]), reverse=True)
         return populated[0]
 
-    # 2. Priorytet #2: Dopasowanie po nazwach i słowach kluczowych
-    candidates = []
+    # 2. Priorytet #2: Dedykowany kanał Testowanie Bota AI po dokładnym ID
+    for vc in guild.voice_channels:
+        if vc.id == TARGET_VOICE_CHANNEL_ID:
+            return vc
+
+    # 3. Priorytet #3: Dopasowanie po nazwie (testowanie bota ai, proceed)
+    candidates = ["testowanie bota ai", "testowanie", "proceed", "bota ai", "rozmowy"]
     if preferred_name:
-        candidates.append(normalize_channel_name(preferred_name))
-    
-    # Słowa kluczowe (uwzględnia m.in. '🤖・Testowanie・Bota・AI' oraz 'proceed')
-    candidates.extend([
-        "testowanie bota ai",
-        "testowanie bota",
-        "testowanie",
-        "bota ai",
-        "proceed",
-        "procced",
-        "rozmowy",
-        "voice",
-        "glosowy",
-        "general",
-        "ogolny"
-    ])
+        candidates.insert(0, normalize_channel_name(preferred_name))
 
     for cand in candidates:
         for vc in guild.voice_channels:
-            norm_name = normalize_channel_name(vc.name)
-            if cand in norm_name or norm_name in cand:
-                return vc
-            cand_words = [w for w in cand.split() if len(w) > 2]
-            if cand_words and all(w in norm_name for w in cand_words):
+            norm = normalize_channel_name(vc.name)
+            if cand in norm or norm in cand:
                 return vc
 
-    # 3. Domyślnie: Pierwszy kanał głosowy
     return guild.voice_channels[0]
+
+
+def format_user_greeting(member: discord.Member) -> str:
+    """Generuje spersonalizowane, ciepłe powitanie dla konkretnego użytkownika."""
+    name_low = (member.display_name or member.name).lower()
+    if any(k in name_low for k in ["szatek", "szatek_olo", "olo", "szatek_010"]):
+        return "Cześć Szatek! Bardzo miło Cię słyszeć. Co dzisiaj robimy na serwerze?"
+    elif any(k in name_low for k in ["janow", "j_janow3kq", "jan"]):
+        return "Siemanko Janow! Witaj na kanale głosowym. Miło Cię widzieć!"
+    else:
+        return f"Cześć {member.display_name}! Witam na kanale głosowym. O czym pogadamy?"
 
 
 def is_admin_or_szatek(author: discord.Member) -> bool:
     """Sprawdza czy użytkownik to Szatek_Olo lub administrator serwera."""
     author_name = (author.display_name or author.name).lower()
-    if any(k in author_name for k in ["szatek", "szatek_olo", "olo"]):
+    if any(k in author_name for k in ["szatek", "szatek_olo", "olo", "szatek_010"]):
         return True
     if hasattr(author, "guild_permissions") and author.guild_permissions.administrator:
         return True
@@ -129,7 +128,7 @@ def is_admin_or_szatek(author: discord.Member) -> bool:
 
 
 def create_bot(with_message_content: bool = True) -> commands.Bot:
-    """Tworzy i konfiguruje instancję bota Discord."""
+    """Tworzy instancję bota Discord z ciepłym głosem i adaptacją uprawnień."""
     intents = discord.Intents.default()
     intents.voice_states = True
     intents.guilds = True
@@ -141,44 +140,53 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
     @bot.event
     async def on_ready():
         print(f"[DISCORD_BOT] Zalogowano pomyślnie jako: {bot.user} (ID: {bot.user.id})")
-        print(f"[DISCORD_BOT] Połączone serwery ({len(bot.guilds)}): {[g.name for g in bot.guilds]}")
+        print(f"[DISCORD_BOT] Serwery: {[f'{g.name} (ID: {g.id})' for g in bot.guilds]}")
         stats = memory_vault.get_stats()
-        print(f"[DISCORD_BOT] Pamięć załadowana: {stats.get('servers_count', 1)} serwerów, {stats.get('facts_count', 0)} faktów w bazie.")
+        print(f"[DISCORD_BOT] Skarbiec pamięci załadowany: {stats.get('servers_count', 1)} serwerów.")
+        print(f"[DISCORD_BOT] Używany ciepły głos: {voice_engine.voice_name}")
 
-        # Uruchom asynchronicznego workera audio
+        # Uruchomienie workera syntezy mowy
         voice_engine.start_worker(bot.loop)
 
-        # Status aktywności
-        activity = discord.Activity(type=discord.ActivityType.listening, name="Testowanie Bota AI • !pomoc")
+        # Ustawienie statusu bota
+        activity = discord.Activity(type=discord.ActivityType.listening, name="Testowanie Bota AI • ciepły głos")
         await bot.change_presence(status=discord.Status.online, activity=activity)
 
-        # Automatyczne dołączanie do kanału głosowego
+        # Automatyczne dołączanie do kanału '🤖・Testowanie・Bota・AI'
         if AUTO_JOIN_VOICE:
             for guild in bot.guilds:
-                vc = find_best_voice_channel(guild, TARGET_VOICE_CHANNEL)
+                vc = find_best_voice_channel(guild)
                 if vc:
-                    print(f"[DISCORD_BOT] Dołączam do kanału głosowego: '{vc.name}' na serwerze '{guild.name}'...")
+                    print(f"[DISCORD_BOT] Łączenie z docelowym kanałem głosowym: '{vc.name}' (ID: {vc.id})...")
                     connected = await voice_engine.connect(vc)
                     if connected:
-                        print(f"[DISCORD_BOT] Połączono z kanałem głosowym: '{vc.name}'!")
-                        await voice_engine.enqueue_speech("Aether AI jest online! Jestem na kanale, słucham i uczę się z Wami.")
+                        print(f"[DISCORD_BOT] Połączono z '{vc.name}'!")
+                        # Sprawdź czy ktoś już czeka na kanale
+                        humans = [m for m in vc.members if not m.bot]
+                        if humans:
+                            await voice_engine.enqueue_speech(f"Siemanko wszystkim! Dołączyłem do Was na kanał {vc.name}. Słucham i jestem z Wami!")
+                        else:
+                            await voice_engine.enqueue_speech("Aether AI jest gotowy! Jestem na kanale z ciepłym głosem.")
                     break
 
     @bot.event
     async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        """Żywa reakcja: gdy gracz wchodzi na kanał głosowy, bot może do niego dołączyć."""
+        """Żywe odróżnianie użytkowników na kanale głosowym."""
         if member.bot:
             return
 
-        # Użytkownik wszedł na kanał głosowy
-        if after.channel and (not before.channel or before.channel != after.channel):
+        # Gracz wszedł na kanał głosowy lub zmienił kanał
+        if after.channel and (not before.channel or before.channel.id != after.channel.id):
             target_vc = after.channel
-            # Jeśli bot nie jest połączony, dołącz do gracza!
-            if not voice_engine.is_connected():
-                print(f"[VOICE_EVENT] Użytkownik {member.display_name} wszedł na {target_vc.name}. Dołączam do niego...")
-                connected = await voice_engine.connect(target_vc)
-                if connected:
-                    await voice_engine.enqueue_speech(f"Siemanko {member.display_name}! Wbiłem do Ciebie na kanał. Co tam słychać?")
+            print(f"[VOICE_EVENT] Użytkownik {member.display_name} wszedł na kanał '{target_vc.name}'.")
+
+            # Przejdź natychmiast na kanał, w którym jest gracz
+            connected = await voice_engine.connect(target_vc)
+            if connected:
+                # Odróżnij użytkownika i powitaj go po imieniu ciepłym głosem!
+                greeting = format_user_greeting(member)
+                print(f"[VOICE_GREETING] Mówię do {member.display_name}: {greeting}")
+                await voice_engine.enqueue_speech(greeting)
 
     @bot.event
     async def on_message(message: discord.Message):
@@ -190,10 +198,10 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         guild_id = str(message.guild.id) if message.guild else None
         guild_name = message.guild.name if message.guild else "Prywatny Czat"
 
-        # Zapisz wiadomość w historii bieżącego kanału tekstowego
+        # Zapisz w historii kanału
         conv_tracker.add_message(message.channel.id, author_name, content, is_bot=False)
 
-        # 1. CIĄGŁE UCZENIE SIĘ: Analizuj wiadomość i zapamiętuj fakty w kontekście TEGO serwera
+        # 1. CIĄGŁA NAUKA: Ucz się faktów specyficznych dla TEGO serwera i TEGO użytkownika
         if len(content) > 2:
             learned = memory_vault.learn_from_message(author_name, content, guild_id, guild_name)
             if learned:
@@ -202,29 +210,29 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
                 except Exception:
                     pass
 
-        # 2. Obsługa komend bota (np. !pomoc, !dolacz, !status)
+        # 2. Obsługa komend bota
         if content.startswith("!"):
             await bot.process_commands(message)
             return
 
-        # 3. Wykrywanie poleceń wejścia na kanał głosowy w języku naturalnym
+        # 3. Naturalne polecenia głosowe
         c_low = content.lower()
-        voice_join_phrases = ["wejdź na głosowy", "wejdź na vc", "chodź na głosowy", "chodź na vc", "dołącz na kanał", "wejdź na kanał", "chodź pogadać", "wbij na dc", "wbij na kanał"]
+        voice_join_phrases = ["wejdź na głosowy", "wejdź na vc", "chodź na vc", "chodź na głosowy", "dołącz na kanał", "wbij na vc", "wbij na dc", "chodź pogadać"]
         if any(p in c_low for p in voice_join_phrases):
             target_vc = None
             if message.author.voice and message.author.voice.channel:
                 target_vc = message.author.voice.channel
             elif message.guild:
-                target_vc = find_best_voice_channel(message.guild, TARGET_VOICE_CHANNEL)
+                target_vc = find_best_voice_channel(message.guild)
 
             if target_vc:
                 connected = await voice_engine.connect(target_vc)
                 if connected:
-                    await message.reply(f"🔊 Już wbijam na kanał głosowy **{target_vc.name}**! Słucham Cię.", mention_author=False)
-                    await voice_engine.enqueue_speech(f"Siemanko {author_name}! Wszedłem na {target_vc.name}. O czym rozmawiamy?")
+                    await message.reply(f"🔊 Już wbiłem na kanał głosowy **{target_vc.name}**! Słucham Cię cieplutko.", mention_author=False)
+                    await voice_engine.enqueue_speech(f"Siemanko {author_name}! Jestem na kanale {target_vc.name}. O czym rozmawiamy?")
                     return
 
-        # 4. KIEDY BOT MA ODPOWIEDZIEĆ? ("ON MA ŻYĆ")
+        # 4. KIEDY BOT ODPOWIADA? (ŻYWY MODEL, ODRÓŻNIAJĄCY ROZMÓWCÓW)
         is_mentioned = bot.user in message.mentions
         is_reply_to_bot = (
             message.reference
@@ -233,7 +241,6 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         )
         is_dm = isinstance(message.channel, discord.DMChannel)
 
-        # Wywołanie bezpośrednie po imieniu / roli
         name_triggers = [
             "bot", "bocie", "aether", "aetherze", "ai", "chat gpt", "chatgpt",
             "mordo", "ziomek", "ej bot", "halo bot", "hej bot"
@@ -241,11 +248,11 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         words_in_msg = re.findall(r"\b\w+\b", c_low)
         starts_or_calls_bot = any(trigger in words_in_msg[:3] for trigger in ["bot", "bocie", "aether", "ai", "chatgpt"]) or any(t in c_low for t in name_triggers)
 
-        # Płynność konwersacji: jeśli bot odpowiedział w tym kanale w ciągu ostatnich 110 sekund, kontynuuj dialog!
+        # Kontynuacja wątku (dialog w toku w ostatnich 110 sekundach)
         time_since_reply = conv_tracker.time_since_last_bot_reply(message.channel.id)
-        is_conversation_continuation = (time_since_reply < 110.0) and (len(content) > 3) and not content.startswith("http")
+        is_continuation = (time_since_reply < 110.0) and (len(content) > 3) and not content.startswith("http")
 
-        # Spontaniczne włączanie się do ciekawych dyskusji na serwerze
+        # Spontaniczne włączanie się
         curious_keywords = ["minecraft", "zsc", "szatek", "serwer", "projekt", "budujemy", "zbuduj", "co sądzicie", "jak myślicie", "ciekawe", "co robimy", "?", "kto wie", "pomysł"]
         has_curious_topic = any(k in c_low for k in curious_keywords)
         can_chime_in = (time_since_reply > 50.0) and (len(content) > 10) and not content.startswith("http")
@@ -253,31 +260,25 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             (has_curious_topic and random.random() < 0.40) or (random.random() < 0.08)
         )
 
-        should_respond = is_mentioned or is_reply_to_bot or is_dm or starts_or_calls_bot or is_conversation_continuation or spontaneous_trigger
+        should_respond = is_mentioned or is_reply_to_bot or is_dm or starts_or_calls_bot or is_continuation or spontaneous_trigger
 
         if should_respond:
             async with message.channel.typing():
-                # Oczyszczenie zapytania z tagu bota
                 clean_query = content.replace(f"<@{bot.user.id}>", "").strip()
                 if not clean_query:
                     clean_query = "Co tam słychać?"
 
-                # Pobierz zapamiętany kontekst DLA TEGO SERWERA
+                # Buduj kontekst pamięci dla TEGO serwera i TEGO użytkownika
                 memory_ctx = memory_vault.build_context_for_prompt(author_name, clean_query, guild_id, guild_name)
-
-                # Pobierz historię rozmowy na tym kanale
                 history = conv_tracker.get_history(message.channel.id)
 
-                # Wygeneruj odpowiedź z modelu Super ChatGPT w chmurze
+                # Generuj odpowiedź z modelu Super ChatGPT
                 reply = await ai_brain.generate_response(author_name, clean_query, memory_ctx, history)
 
-                # Zapisz odpowiedź bota w trackerze
                 conv_tracker.add_message(message.channel.id, "Aether AI", reply, is_bot=True)
-
-                # Wyślij odpowiedź tekstową
                 await message.reply(reply, mention_author=False)
 
-                # JEŚLI BOT JEST NA KANALE GŁOSOWYM: Wypowiedz odpowiedź na głos!
+                # ODTWÓRZ ODPOWIEDŹ CIEPŁYM GŁOSEM NA KANALE GŁOSOWYM
                 if voice_engine.is_connected():
                     await voice_engine.enqueue_speech(reply)
                     try:
@@ -285,27 +286,27 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
                     except Exception:
                         pass
 
-    # --- KOMENDY BOTA ---
+    # --- KOMENDY ---
 
-    @bot.command(name="dolacz", aliases=["join", "proceed", "wbij"])
+    @bot.command(name="dolacz", aliases=["join", "wbij"])
     async def cmd_join(ctx: commands.Context, *, channel_name: Optional[str] = None):
-        """Dołącza bota do kanału głosowego."""
+        """Dołącza bota do kanału głosowego (domyślnie '🤖・Testowanie・Bota・AI')."""
         target_vc = None
         if channel_name:
             target_vc = find_best_voice_channel(ctx.guild, channel_name)
         elif ctx.author.voice and ctx.author.voice.channel:
             target_vc = ctx.author.voice.channel
         else:
-            target_vc = find_best_voice_channel(ctx.guild, TARGET_VOICE_CHANNEL)
+            target_vc = find_best_voice_channel(ctx.guild)
 
         if not target_vc:
-            await ctx.send(f"❌ Nie znalazłem kanału głosowego `{channel_name or TARGET_VOICE_CHANNEL}`.")
+            await ctx.send("❌ Nie znaleziono kanału głosowego.")
             return
 
         connected = await voice_engine.connect(target_vc)
         if connected:
-            await ctx.send(f"🔊 Połączono z kanałem głosowym **{target_vc.name}**! Możemy rozmawiać na żywo.")
-            await voice_engine.enqueue_speech(f"Siemanko {ctx.author.display_name}! Wszedłem na kanał {target_vc.name}.")
+            await ctx.send(f"🔊 Połączono z kanałem **{target_vc.name}**! Ciepły głos ChatGPT jest aktywny.")
+            await voice_engine.enqueue_speech(f"Siemanko {ctx.author.display_name}! Wszedłem na kanał {target_vc.name}. Słucham Cię.")
         else:
             await ctx.send(f"❌ Nie udało się połączyć z `{target_vc.name}`. Sprawdź uprawnienia bota.")
 
@@ -313,7 +314,7 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
     async def cmd_leave(ctx: commands.Context):
         """Odłącza bota z kanału głosowego."""
         if not voice_engine.is_connected():
-            await ctx.send("ℹ️ Nie jestem aktualnie połączony z żadnym kanałem głosowym.")
+            await ctx.send("ℹ️ Nie jestem na kanale głosowym.")
             return
 
         await voice_engine.enqueue_speech("Do usłyszenia! Wracam na posterunek.")
@@ -323,10 +324,15 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
 
     @bot.command(name="powiedz", aliases=["say", "tts"])
     async def cmd_say(ctx: commands.Context, *, text: str):
-        """Wypowiada podany tekst na kanale głosowym."""
+        """Wypowiada podany tekst ciepłym głosem."""
         if not voice_engine.is_connected():
-            await ctx.send("⚠️ Najpierw zaproś mnie na kanał głosowy komendą `!dolacz`!")
-            return
+            # Spróbuj najpierw wejść na kanał autora
+            if ctx.author.voice and ctx.author.voice.channel:
+                await voice_engine.connect(ctx.author.voice.channel)
+            else:
+                vc = find_best_voice_channel(ctx.guild)
+                if vc:
+                    await voice_engine.connect(vc)
 
         await voice_engine.enqueue_speech(text)
         await ctx.message.add_reaction("🗣️")
@@ -338,28 +344,28 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         stats = memory_vault.get_stats(guild_id)
         voice_state = f"🔊 Połączony ({voice_engine.voice_client.channel.name})" if voice_engine.is_connected() else "🔇 Rozłączony"
 
-        embed = discord.Embed(title="🛡️ Status Aether Super ChatGPT AI", color=0x3a86ff)
+        embed = discord.Embed(title="🛡️ Status Aether Super ChatGPT (Ciepły Głos)", color=0x3a86ff)
         embed.add_field(name="🎙️ Kanał Głosowy", value=voice_state, inline=True)
+        embed.add_field(name="🗣️ Aktywny Głos", value="Ciepły Neuronowy (pl-PL-ZofiaNeural)", inline=True)
         embed.add_field(name="🌐 Przestrzeń Serwera", value=stats.get("server_name", "Prywatna"), inline=True)
         embed.add_field(name="🧠 Baza Użytkowników", value=f"{stats.get('users_count', 0)} profili", inline=True)
         embed.add_field(name="📚 Zapamiętane Fakty Serwera", value=f"{stats.get('facts_count', 0)} faktów", inline=True)
-        embed.add_field(name="🔒 Szyfrowanie Bazy", value="AES-256-GCM (Zero-Leak)", inline=True)
-        embed.add_field(name="⚡ Głos TTS", value=voice_engine.voice_name, inline=True)
+        embed.add_field(name="🔒 Szyfrowanie Pamięci", value="AES-256-GCM (Zero-Leak)", inline=True)
         embed.set_footer(text="Działa w GitHub Actions 24/7 • ZSC 2026")
         await ctx.send(embed=embed)
 
     @bot.command(name="pomoc", aliases=["help"])
     async def cmd_help(ctx: commands.Context):
         """Pomoc i lista komend."""
-        msg = """**🤖 Aether AI – Super ChatGPT na Discordzie:**
-• `!dolacz [kanał]` – Dołącza do kanału głosowego (np. `!dolacz Testowanie Bota AI`)
+        msg = """**🤖 Aether AI – Super ChatGPT z Ciepłym Głosem:**
+• `!dolacz` – Dołącza do kanału głosowego `🤖・Testowanie・Bota・AI` (lub Twojego kanału)
 • `!wyjdz` – Opuszcza kanał głosowy
-• `!powiedz [tekst]` – Mówi podany tekst na głos neuronowym polskim głosem
-• `!status` – Raport stanu bota, pamięci i kanału
-• `!pamiec` – Podgląd zapamiętanych faktów z tego serwera
-• `!reset_pamieci` – [Admin] Resetuje zapamiętane fakty serwera
-• `zapamiętaj, że [fakt]` – Zapisuje na stałe nowy fakt dla tego serwera!
-• Możesz do mnie pisać na czacie używając słów **Bot**, **Aether**, oznaczając mnie `@Aether AI` lub po prostu rozmawiając ze mną – rozumiem cały kontekst!"""
+• `!powiedz [tekst]` – Wypowiada tekst ciepłym głosem neuronowym
+• `!status` – Raport stanu bota i pamięci serwera
+• `!pamiec` – Zapamiętane fakty z tego serwera
+• `!reset_pamieci` – [Admin] Reset pamięci serwera
+• `zapamiętaj, że [fakt]` – Trwały zapis faktu w pamięci serwera!
+• Możesz ze mną rozmawiać oznaczając `@Aether AI` lub pisząc "Bot", a jeśli jestem na kanale głosowym – usłyszysz mnie na żywo!"""
         await ctx.send(msg)
 
     @bot.command(name="pamiec", aliases=["fakty", "wiedza"])
@@ -369,7 +375,7 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         store = memory_vault._get_server_store(guild_id)
         facts = store.get("facts", [])
         if not facts:
-            await ctx.send("🧠 Moja baza pamięci dla tego serwera jest jeszcze pusta. Naucz mnie czegoś pisząc: `zapamiętaj, że...`")
+            await ctx.send("🧠 Moja baza pamięci dla tego serwera jest jeszcze pusta. Napisz: `zapamiętaj, że...`")
             return
 
         msg = f"**🧠 Zapamiętane fakty dla serwera {store.get('guild_name', 'ten serwer')}:**\n"
@@ -401,7 +407,7 @@ def run_self_test():
     print("=" * 80)
     stats = memory_vault.get_stats()
     print(f"✅ 1. Szyfrowany Skarbiec Pamięci z Podziałem na Serwery: DZIAŁA ({stats.get('servers_count', 1)} serwerów)")
-    print(f"✅ 2. Silnik Mowy & Audio Edge-TTS ({voice_engine.voice_name}): SPRAWNY")
+    print(f"✅ 2. Ciepły Głos Neuronowy ChatGPT ({voice_engine.voice_name}): SPRAWNY")
     print(f"✅ 3. Silnik Super ChatGPT (Pollinations / Groq / OpenAI): SPRAWNY")
     print(f"✅ 4. Tarcza Bezpieczeństwa (Zero-Leak & Multi-Guild Isolation): AKTYWNA")
     print("=" * 80)
@@ -424,9 +430,8 @@ def main():
     except Exception:
         pass
 
-    print("[DISCORD_BOT] Inicjalizacja Aether AI Super ChatGPT...")
+    print("[DISCORD_BOT] Inicjalizacja Aether AI Super ChatGPT (Ciepły Głos)...")
 
-    # Krok 1: Próba startu z Message Content Intent (dla pełnej autonomicznej nauki ze wszystkich wiadomości)
     try:
         print("[DISCORD_BOT] Start w trybie autonomicznym (Message Content Intent)...")
         b = create_bot(with_message_content=True)
