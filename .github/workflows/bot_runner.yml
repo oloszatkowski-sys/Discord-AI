@@ -69,12 +69,6 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           VOICE_CHANNEL_NAME: ${{ inputs.voice_channel_name || secrets.VOICE_CHANNEL_NAME || 'proceed' }}
           AUTO_JOIN_VOICE: "true"
-          VAULT_ENCRYPTION_KEY: ${{ secrets.VAULT_ENCRYPTION_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          VOICE_CHANNEL_NAME: ${{ secrets.VOICE_CHANNEL_NAME || 'proceed' }}
-          AUTO_JOIN_VOICE: "true"
         run: |
           # Uruchom bota
           python bot.py
