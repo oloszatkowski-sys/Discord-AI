@@ -1,10 +1,12 @@
 """
-voice_engine.py - Silnik Ciepłego Głosu i Rozmów Głosowych (Edge-TTS ZofiaNeural + FFmpeg)
-========================================================================================
+voice_engine.py - Krystalicznie Czysty Silnik Głosu dla Discorda (Edge-TTS + Pre-Render WAV + Anti-Static)
+========================================================================================================
 Odpowiada za:
-1. Ciepły, naturalny, ludzki głos neuronowy w stylu ChatGPT (pl-PL-ZofiaNeural).
-2. Płynne odtwarzanie audio bez nakładania się i bez błędów 'Already playing'.
-3. Automatyczne dołączanie i przełączanie między kanałami głosowymi Discorda.
+1. Ciepły, naturalny głos neuronowy ChatGPT (pl-PL-ZofiaNeural).
+2. Krystalicznie czysty dźwięk bez szumów, zniekształceń i przesterów (brak clippingu):
+   - Pre-renderowanie do formatu bezstratnego PCM 48kHz Stereo WAV (dokładny standard Discord Opus).
+   - Dynamiczny zapas głośności (headroom 0.92) eliminujący trzaski.
+   - Bezpieczne kolejkowanie i eliminacja błędów 'Already playing'.
 """
 
 import os
@@ -15,9 +17,42 @@ from typing import Optional
 import discord
 import edge_tts
 
-# Najcieplejszy, najbardziej naturalny i empatyczny polski głos neuronowy (odpowiednik głosu ChatGPT)
 DEFAULT_WARM_VOICE = "pl-PL-ZofiaNeural"
 TEMP_AUDIO_DIR = "temp_audio"
+
+
+def sanitize_text_for_speech(text: str) -> str:
+    """Oczyszcza tekst dla syntezatora mowy, usuwając emoji, linki i zbędne formatowanie."""
+    if not text:
+        return ""
+    # Usuń linki
+    text = re.sub(r"https?://\S+", "", text)
+    # Usuń wzmianki Discorda <@123>
+    text = re.sub(r"<@!?\d+>", "", text)
+    # Usuń formatowanie markdown
+    text = re.sub(r"[\*`#_~>]", "", text)
+    # Usuń emoji i symbole graficzne
+    text = re.sub(r"[\U00010000-\U0010ffff]|[\u2600-\u27bf]|[\ud83c-\ud83e][\ud000-\udfff]", "", text)
+    # Zastąp cudzysłowy i myślniki naturalnymi pauzami
+    text = text.replace("„", "").replace("”", "").replace('"', "")
+    text = text.replace("–", ", ").replace("—", ", ")
+
+    # Weź maksymalnie 2 pełne zdania (do 220 znaków) dla płynnej, naturalnej wypowiedzi głosowej
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    clean_parts = []
+    total_len = 0
+    for s in sentences:
+        s_clean = s.strip()
+        if not s_clean:
+            continue
+        if total_len + len(s_clean) < 220:
+            clean_parts.append(s_clean)
+            total_len += len(s_clean)
+        else:
+            break
+
+    result = " ".join(clean_parts).strip()
+    return result or text[:180].strip()
 
 
 class DiscordVoiceEngine:
@@ -35,7 +70,7 @@ class DiscordVoiceEngine:
             self._worker_task = loop.create_task(self._process_queue())
 
     async def connect(self, channel: discord.VoiceChannel) -> bool:
-        """Dołącza bota do wskazanego kanału głosowego lub przenosi go, jeśli już jest połączony."""
+        """Dołącza bota do wskazanego kanału głosowego lub przenosi go."""
         try:
             if self.voice_client and self.voice_client.is_connected():
                 if self.voice_client.channel.id == channel.id:
@@ -64,66 +99,81 @@ class DiscordVoiceEngine:
         return bool(self.voice_client and self.voice_client.is_connected())
 
     async def enqueue_speech(self, text: str):
-        """Dodaje tekst do kolejki syntezy z ciepłym głosem."""
-        clean_text = text.strip()
-        if not clean_text:
+        """Dodaje oczyszczony tekst do kolejki syntezy mowy."""
+        clean_speech = sanitize_text_for_speech(text)
+        if not clean_speech or len(clean_speech) < 2:
             return
 
-        # Ograniczenie długości pojedynczej wypowiedzi dla płynności rozmowy (max 350 znaków)
-        if len(clean_text) > 350:
-            clean_text = clean_text[:347] + "..."
-
-        if self.speech_queue.qsize() > 6:
+        if self.speech_queue.qsize() > 5:
             print("[VOICE_ENGINE] Kolejka audio pełna – pomijam wypowiedź.")
             return
 
-        # Oczyszczenie formatowania markdown
-        clean_text = clean_text.replace("*", "").replace("`", "").replace("#", "").replace("_", "").replace("~", "")
-        clean_text = re.sub(r"<@!?\d+>", "", clean_text).strip()
-        if clean_text:
-            await self.speech_queue.put(clean_text)
+        await self.speech_queue.put(clean_speech)
 
     async def _process_queue(self):
-        """Pobiera teksty z kolejki i odtwarza je po kolei ciepłym głosem."""
+        """Pobiera teksty z kolejki, konwertuje do WAV 48kHz stereo i odtwarza bez szumu."""
         while True:
             text = await self.speech_queue.get()
-            audio_filename = None
+            mp3_path = None
+            wav_path = None
             try:
                 if not self.is_connected():
                     await asyncio.sleep(0.5)
                     continue
 
-                # Czekaj jeśli aktualnie coś jeszcze jest odtwarzane
+                # Czekaj na zakończenie poprzedniej wypowiedzi
                 while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing():
-                    await asyncio.sleep(0.15)
+                    await asyncio.sleep(0.1)
 
-                # 1. Wygeneruj ciepły głos neuronowy za pomocą Edge-TTS
-                audio_filename = os.path.join(TEMP_AUDIO_DIR, f"warm_{uuid.uuid4().hex[:8]}.mp3")
-                # pl-PL-ZofiaNeural ma wyjątkowo ciepłe, naturalne i przyjazne brzmienie
-                communicate = edge_tts.Communicate(text, self.voice_name, rate="+3%", pitch="+0Hz")
-                await communicate.save(audio_filename)
+                uid = uuid.uuid4().hex[:8]
+                mp3_path = os.path.join(TEMP_AUDIO_DIR, f"tts_{uid}.mp3")
+                wav_path = os.path.join(TEMP_AUDIO_DIR, f"clean_{uid}.wav")
 
-                # 2. Odtwórz w Discordzie przez FFmpeg
-                if self.voice_client and self.voice_client.is_connected():
-                    play_done_event = asyncio.Event()
+                # 1. Generowanie mowy z Edge-TTS (Ciepły głos ZofiaNeural)
+                communicate = edge_tts.Communicate(text, self.voice_name, rate="+1%", pitch="+0Hz")
+                await communicate.save(mp3_path)
 
-                    def after_playing(err):
+                # 2. Pre-renderowanie do nieskompresowanego PCM 48kHz Stereo WAV (dokładny format Discorda)
+                # Zapobiega problemom ze strumieniowaniem MP3 i zniekształceniom
+                convert_cmd = [
+                    "ffmpeg", "-y",
+                    "-i", mp3_path,
+                    "-vn",
+                    "-ar", "48000",
+                    "-ac", "2",
+                    "-c:a", "pcm_s16le",
+                    "-af", "volume=0.90",
+                    wav_path
+                ]
+
+                proc = await asyncio.create_subprocess_exec(
+                    *convert_cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL
+                )
+                await proc.communicate()
+
+                # 3. Odtwarzanie w Discordzie
+                if os.path.exists(wav_path) and self.voice_client and self.voice_client.is_connected():
+                    play_done = asyncio.Event()
+
+                    def after_play(err):
                         if err:
-                            print(f"[VOICE_ENGINE] Błąd odtwarzania FFmpeg: {err}")
-                        play_done_event.set()
+                            print(f"[VOICE_ENGINE] Błąd po odtworzeniu audio: {err}")
+                        play_done.set()
 
-                    source = discord.FFmpegPCMAudio(audio_filename, options="-vn")
-                    audio_source = discord.PCMVolumeTransformer(source, volume=1.15)
-                    self.voice_client.play(audio_source, after=after_playing)
+                    source = discord.FFmpegPCMAudio(wav_path)
+                    self.voice_client.play(source, after=after_play)
 
-                    await play_done_event.wait()
+                    await play_done.wait()
 
             except Exception as e:
-                print(f"[VOICE_ENGINE] Wyjątek podczas syntezy ciepłego głosu: {e}")
+                print(f"[VOICE_ENGINE] Błąd podczas syntezy/odtwarzania: {e}")
             finally:
-                if audio_filename and os.path.exists(audio_filename):
-                    try:
-                        os.remove(audio_filename)
-                    except Exception:
-                        pass
+                for p in [mp3_path, wav_path]:
+                    if p and os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except Exception:
+                            pass
                 self.speech_queue.task_done()
