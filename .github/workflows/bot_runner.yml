@@ -1,7 +1,16 @@
 name: AETHER Discord AI Runner
 
 on:
-  workflow_dispatch: # Uruchamianie ręczne z zakładki Actions
+  workflow_dispatch:
+    inputs:
+      manual_discord_token:
+        description: 'Opcjonalny Token Discorda (jeśli nie dodano w Settings -> Secrets)'
+        required: false
+        default: ''
+      voice_channel_name:
+        description: 'Nazwa kanału głosowego (domyślnie: proceed)'
+        required: false
+        default: 'proceed'
   schedule:
     # Automatyczny restart co 5 godzin, aby podtrzymać bota 24/7 (limit jednego joba to 6h)
     - cron: '0 */5 * * *'
@@ -45,14 +54,21 @@ jobs:
       - name: 🛡️ Maskowanie Tajemnic w Logach Runnera (Tarcza Anti-Leak)
         run: |
           if [ -n "${{ secrets.DISCORD_TOKEN }}" ]; then echo "::add-mask::${{ secrets.DISCORD_TOKEN }}"; fi
+          if [ -n "${{ inputs.manual_discord_token }}" ]; then echo "::add-mask::${{ inputs.manual_discord_token }}"; fi
           if [ -n "${{ secrets.VAULT_ENCRYPTION_KEY }}" ]; then echo "::add-mask::${{ secrets.VAULT_ENCRYPTION_KEY }}"; fi
+          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then echo "::add-mask::${{ secrets.OPENAI_API_KEY }}"; fi
           if [ -n "${{ secrets.GROQ_API_KEY }}" ]; then echo "::add-mask::${{ secrets.GROQ_API_KEY }}"; fi
           if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then echo "::add-mask::${{ secrets.GEMINI_API_KEY }}"; fi
-          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then echo "::add-mask::${{ secrets.OPENAI_API_KEY }}"; fi
 
       - name: 🚀 Start Bota AI (Tekst + Głos proceed + Ciągła Nauka)
         env:
-          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN || inputs.manual_discord_token }}
+          VAULT_ENCRYPTION_KEY: ${{ secrets.VAULT_ENCRYPTION_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VOICE_CHANNEL_NAME: ${{ inputs.voice_channel_name || secrets.VOICE_CHANNEL_NAME || 'proceed' }}
+          AUTO_JOIN_VOICE: "true"
           VAULT_ENCRYPTION_KEY: ${{ secrets.VAULT_ENCRYPTION_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

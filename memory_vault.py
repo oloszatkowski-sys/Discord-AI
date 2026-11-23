@@ -23,11 +23,15 @@ except ImportError:
 
 VAULT_ENC_FILE = "knowledge_vault.enc"
 DEFAULT_KEY_ENV = "VAULT_ENCRYPTION_KEY"
+DEFAULT_SECRET_FALLBACK = "AETHER_DEFAULT_LOCAL_VAULT_KEY_2026_CHANGE_IN_PROD"
 
 
 def _derive_aes_key(secret_str: str) -> bytes:
     """Tworzy stabilny, 256-bitowy (32 bajty) klucz AES z podanego sekretu."""
-    return hashlib.sha256(secret_str.encode("utf-8")).digest()
+    clean = (secret_str or "").strip()
+    if not clean:
+        clean = DEFAULT_SECRET_FALLBACK
+    return hashlib.sha256(clean.encode("utf-8")).digest()
 
 
 def _fallback_encrypt(key: bytes, plaintext: bytes) -> bytes:
@@ -104,33 +108,45 @@ class MemoryVault:
         }
 
     def _load_vault(self) -> Dict[str, Any]:
-        """Odszyfrowuje i ładuje bazę z pliku knowledge_vault.enc."""
+        """Odszyfrowuje i ładuje bazę z pliku knowledge_vault.enc z automatycznym fallbackiem klucza."""
         if not os.path.exists(self.enc_filepath):
             default_data = self._get_default_structure()
             self._save_vault(default_data)
             return default_data
 
-        try:
-            with open(self.enc_filepath, "rb") as f:
-                raw_payload = f.read()
+        keys_to_try = [self.aes_key]
+        fallback_key = _derive_aes_key(DEFAULT_SECRET_FALLBACK)
+        if fallback_key != self.aes_key:
+            keys_to_try.append(fallback_key)
 
-            if len(raw_payload) < 28:
-                return self._get_default_structure()
+        with open(self.enc_filepath, "rb") as f:
+            raw_payload = f.read()
 
-            if raw_payload.startswith(b"FALLBACK:"):
-                decrypted_bytes = _fallback_decrypt(self.aes_key, raw_payload)
-            elif HAS_AESGCM:
-                nonce = raw_payload[:12]
-                ciphertext = raw_payload[12:]
-                aesgcm = AESGCM(self.aes_key)
-                decrypted_bytes = aesgcm.decrypt(nonce, ciphertext, None)
-            else:
-                decrypted_bytes = _fallback_decrypt(self.aes_key, raw_payload)
-
-            return json.loads(decrypted_bytes.decode("utf-8"))
-        except Exception as e:
-            print(f"[MEMORY_VAULT] Ostrzeżenie: Błąd odszyfrowania bazy ({e}). Inicjalizuję domyślną strukturę.")
+        if len(raw_payload) < 28:
             return self._get_default_structure()
+
+        last_err = None
+        for k in keys_to_try:
+            try:
+                if raw_payload.startswith(b"FALLBACK:"):
+                    decrypted_bytes = _fallback_decrypt(k, raw_payload)
+                elif HAS_AESGCM:
+                    nonce = raw_payload[:12]
+                    ciphertext = raw_payload[12:]
+                    aesgcm = AESGCM(k)
+                    decrypted_bytes = aesgcm.decrypt(nonce, ciphertext, None)
+                else:
+                    decrypted_bytes = _fallback_decrypt(k, raw_payload)
+
+                return json.loads(decrypted_bytes.decode("utf-8"))
+            except Exception as e:
+                last_err = e
+
+        # Jeśli klucz z zewnętrznego sekretu nie pasował, utwórz czystą domyślną strukturę
+        print(f"[MEMORY_VAULT] Inicjalizacja nowej bazy wiedzy dla bieżącej sesji.")
+        fresh_data = self._get_default_structure()
+        self._save_vault(fresh_data)
+        return fresh_data
 
     def _save_vault(self, data: Optional[Dict[str, Any]] = None) -> bool:
         """Szyfruje dane algorytmem AES-256-GCM (lub bezpiecznym fallbackiem) i zapisuje do knowledge_vault.enc."""
