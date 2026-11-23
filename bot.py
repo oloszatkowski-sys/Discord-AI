@@ -195,8 +195,21 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
 
         author_name = message.author.display_name or message.author.name
         content = (message.content or "").strip()
+
+        # INTELIGENTNY BYPASS: Jeśli bramka Discorda przysłała pusty tekst (brak privileged intents),
+        # pobierz pełną treść wiadomości bezpośrednio przez REST API Discorda!
+        if not content and not message.author.bot:
+            try:
+                fetched = await message.channel.fetch_message(message.id)
+                content = (fetched.content or "").strip()
+            except Exception:
+                pass
+
         guild_id = str(message.guild.id) if message.guild else None
         guild_name = message.guild.name if message.guild else "Prywatny Czat"
+
+        ch_name = getattr(message.channel, "name", "DM")
+        print(f"[CHAT] [{author_name} w #{ch_name}]: {content}")
 
         # Zapisz w historii kanału
         conv_tracker.add_message(message.channel.id, author_name, content, is_bot=False)
@@ -254,13 +267,13 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         words_in_msg = re.findall(r"\b\w+\b", c_low)
         starts_or_calls_bot = any(trigger in words_in_msg[:3] for trigger in ["bot", "bocie", "aether", "ai", "chatgpt"]) or any(t in c_low for t in name_triggers)
 
-        # Powitania na czacie (siema, elo, hejka, cześć)
-        greetings = ["siema", "siemanko", "hej", "hejka", "elo", "witam", "cześć", "czesc", "yo"]
-        is_greeting = bool(words_in_msg and words_in_msg[0] in greetings)
+        # Powitania i wywołania na czacie (siema, elo, hejka, cześć, halooo)
+        greetings = ["siema", "siemanko", "hej", "hejka", "elo", "witam", "cześć", "czesc", "yo", "halo", "halooo", "siema bot", "co tam"]
+        is_greeting = any(g in c_low for g in greetings)
 
-        # Kontynuacja wątku (dialog w toku w ostatnich 120 sekundach)
+        # Kontynuacja wątku (dialog w toku w ostatnich 180 sekundach)
         time_since_reply = conv_tracker.time_since_last_bot_reply(message.channel.id)
-        is_continuation = (time_since_reply < 120.0) and (len(content) > 2) and not content.startswith("http")
+        is_continuation = (time_since_reply < 180.0) and (len(content) > 1) and not content.startswith("http")
 
         # Spontaniczne włączanie się do dyskusji i pytań graczy
         question_words = ["?", "co ", "jak ", "kiedy ", "dlaczego ", "gdzie ", "kto ", "czy "]
@@ -268,15 +281,15 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         curious_keywords = ["minecraft", "zsc", "szatek", "serwer", "projekt", "budujemy", "zbuduj", "co sądzicie", "jak myślicie", "ciekawe", "co robimy", "pomysł"]
         has_curious_topic = any(k in c_low for k in curious_keywords)
 
-        can_chime_in = (time_since_reply > 35.0) and (len(content) > 3) and not content.startswith("http")
+        can_chime_in = (time_since_reply > 25.0) and (len(content) > 2) and not content.startswith("http")
         spontaneous_trigger = can_chime_in and (
-            (is_question and random.random() < 0.65) or
-            (has_curious_topic and random.random() < 0.50) or
-            (is_greeting and random.random() < 0.50) or
-            (random.random() < 0.12)
+            (is_question and random.random() < 0.75) or
+            (has_curious_topic and random.random() < 0.60) or
+            (is_greeting and random.random() < 0.70) or
+            (random.random() < 0.15)
         )
 
-        should_respond = is_mentioned or is_reply_to_bot or is_dm or starts_or_calls_bot or is_continuation or spontaneous_trigger
+        should_respond = is_mentioned or is_reply_to_bot or is_dm or starts_or_calls_bot or is_greeting or is_continuation or spontaneous_trigger
 
         if should_respond:
             async with message.channel.typing():
