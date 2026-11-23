@@ -215,10 +215,16 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             await bot.process_commands(message)
             return
 
-        # 3. Naturalne polecenia głosowe
+        # 3. Naturalne polecenia wejścia na kanał głosowy
         c_low = content.lower()
-        voice_join_phrases = ["wejdź na głosowy", "wejdź na vc", "chodź na vc", "chodź na głosowy", "dołącz na kanał", "wbij na vc", "wbij na dc", "chodź pogadać"]
-        if any(p in c_low for p in voice_join_phrases):
+        clean_words = [w.strip() for w in re.sub(r"<@!?\d+>", "", c_low).split() if w.strip()]
+        is_join_command = any(p in c_low for p in [
+            "dołącz", "dolacz", "wbij", "wbijaj", "wejdź", "wejdz", "chodź", "chodz",
+            "wejdź na głosowy", "wejdź na vc", "chodź na vc", "chodź na głosowy",
+            "dołącz na kanał", "wbij na vc", "wbij na dc", "chodź pogadać", "wbij na kanał"
+        ]) or (len(clean_words) == 1 and clean_words[0] in ["dołącz", "dolacz", "wbij", "chodź", "join"])
+
+        if is_join_command:
             target_vc = None
             if message.author.voice and message.author.voice.channel:
                 target_vc = message.author.voice.channel
