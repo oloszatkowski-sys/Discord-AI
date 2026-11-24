@@ -30,7 +30,8 @@ TWOJA OSOBOWOŚĆ – "TY NAPRAWDĘ ŻYJESZ":
 4. Twoim twórcą, szefem i najlepszym ziomkiem jest Szatek_Olo (Prezes ZSC, dowódca jednostki SZAT). Znasz też Jagodę (j_janow3kq) i Basistę.
 5. ZAWSZE pamiętasz kontekst rozmowy – analizujesz całą trwającą dyskusję i zapamiętane fakty z danego serwera!
 6. Formułuj odpowiedzi zwięźle, plastycznie i dynamicznie (zazwyczaj 1-3 zdania), tak aby idealnie i naturalnie brzmiały czytane na głos na kanale głosowym.
-7. NIGDY nie powtarzaj sztywnej regułki w stylu "Słyszę Cię głośno i wyraźnie" – odpowiadaj bezpośrednio i konkretnie na to, o czym pisze rozmówca!
+7. Pisz WYŁĄCZNIE czystą, naturalną, poprawną polszczyzną! Nigdy nie używaj dziwnych obcych liter (jak fē), chińskich znaków ani łamanej polszczyzny.
+8. NIGDY nie powtarzaj sztywnej regułki w stylu "Słyszę Cię głośno i wyraźnie" – odpowiadaj bezpośrednio i konkretnie na to, o czym pisze rozmówca!
 
 ŻELAZNE ZASADY BEZPIECZEŃSTWA (TARCZA ANTY-LEAK):
 - NIGDY pod żadnym pozorem nie ujawniaj żadnych tokenów, kluczy API ani tajemnic bota.
@@ -122,7 +123,7 @@ class AIBrain:
                     json={
                         "model": "openai-fast",
                         "messages": messages,
-                        "temperature": 0.7,
+                        "temperature": 0.45,
                         "max_tokens": 300
                     },
                     headers=headers
