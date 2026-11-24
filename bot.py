@@ -214,29 +214,60 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         # Zapisz w historii kanału
         conv_tracker.add_message(message.channel.id, author_name, content, is_bot=False)
 
-        # 1. CIĄGŁA NAUKA: Ucz się faktów specyficznych dla TEGO serwera i TEGO użytkownika
+        # 1. SPRAWDZENIE WYUCZONYCH REGUŁ REAKCJI ("jak ktoś napisze banan to odpisz jabłko")
+        matched_rule = memory_vault.match_rule(content, guild_id)
+        if matched_rule:
+            print(f"[RULES] Wykryto dopasowanie reguły dla: '{content}' -> Odpowiedź: '{matched_rule}'")
+            await message.reply(matched_rule, mention_author=False)
+            if voice_engine.is_connected():
+                await voice_engine.enqueue_speech(matched_rule)
+            conv_tracker.add_message(message.channel.id, "Aether AI", matched_rule, is_bot=True)
+            return
+
+        # 2. BEZPOŚREDNIE ODPYTYWANIE PAMIĘCI ("Wiesz kto to Jagoda?", "Co wiesz o nas?", "Wiesz kto to Basista?")
+        recalled_knowledge = memory_vault.find_knowledge(content, author_name, guild_id, guild_name)
+        if recalled_knowledge:
+            print(f"[MEMORY_RECALL] Błyskawiczna odpowiedź z bazy pamięci na: '{content}'")
+            await message.reply(recalled_knowledge, mention_author=False)
+            if voice_engine.is_connected():
+                await voice_engine.enqueue_speech(recalled_knowledge)
+            conv_tracker.add_message(message.channel.id, "Aether AI", recalled_knowledge, is_bot=True)
+            return
+
+        # 3. CIĄGŁA NAUKA: Ucz się nowych reguł, faktów, pojęć i zdań ze serwera
         if len(content) > 2:
-            learned = memory_vault.learn_from_message(author_name, content, guild_id, guild_name)
-            if learned:
+            learned_result = memory_vault.learn_from_message(author_name, content, guild_id, guild_name)
+            if learned_result:
                 try:
                     await message.add_reaction("🧠")
                 except Exception:
                     pass
+                # Jeśli to jawne nauczenie reguły lub faktu, poinformuj użytkownika na czacie!
+                if any(k in learned_result.lower() for k in ["zapamiętałem", "nauczyłem", "zapisałem"]):
+                    await message.reply(learned_result, mention_author=False)
+                    if voice_engine.is_connected():
+                        await voice_engine.enqueue_speech(learned_result)
+                    return
 
-        # 2. Obsługa komend bota
+        # 4. Obsługa komend bota (!)
         if content.startswith("!"):
             await bot.process_commands(message)
             return
 
-        # 3. Naturalne polecenia wejścia na kanał głosowy
+        # 5. Naturalne polecenia wejścia na kanał głosowy (choc na vc, chodź na vc, wbijaj na głosowy)
         c_low = re.sub(r"[\/\\!\?,\.]", " ", content.lower())
         clean_words = [w.strip() for w in re.sub(r"<@!?\d+>", "", c_low).split() if w.strip()]
-        is_join_command = any(p in c_low for p in [
-            "dołącz", "dolacz", "wbij", "wbijaj", "wejdź", "wejdz", "chodź", "chodz",
-            "wejdź na głosowy", "wejdź na vc", "chodź na vc", "chodź na głosowy",
-            "dołącz na kanał", "dolacz na kanal", "dolacz na kanal glosowy", "dołącz na kanał głosowy",
-            "wbij na vc", "wbij na dc", "chodź pogadać", "wbij na kanał"
-        ]) or (len(clean_words) == 1 and clean_words[0] in ["dołącz", "dolacz", "wbij", "chodź", "join"])
+        is_join_command = (
+            bool(re.search(r"\b(choc|choć|chodz|chodź|wbij|wbijaj|wejdz|wejdź|dolacz|dołącz)\b.*\b(vc|dc|glosow|głosow|kanal|kanał)\b", c_low))
+            or any(p in c_low for p in [
+                "choc na vc", "choć na vc", "chodz na vc", "chodź na vc", "wbij na vc", "wbij vc",
+                "wbijaj na vc", "wejdz na vc", "wejdź na vc", "wbij na glosowy", "chodź na głosowy",
+                "chodz na glosowy", "choc na glosowy", "chodź pogadać", "choc pogadac", "wbijaj na dc",
+                "chodz na dc", "choc na dc", "chodź na dc", "wskakuj na vc", "dołącz na kanał",
+                "dolacz na kanal", "dolacz na glosowy", "dołącz na kanał głosowy", "chodź pogadać"
+            ])
+            or (len(clean_words) == 1 and clean_words[0] in ["dołącz", "dolacz", "wbij", "chodź", "chodz", "choc", "join"])
+        )
 
         if is_join_command:
             target_vc = None
@@ -249,10 +280,10 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
                 connected = await voice_engine.connect(target_vc)
                 if connected:
                     await message.reply(f"🔊 Już wbiłem na kanał głosowy **{target_vc.name}**! Słucham Cię cieplutko.", mention_author=False)
-                    await voice_engine.enqueue_speech(f"Siemanko {author_name}! Jestem na kanale {target_vc.name}. O czym rozmawiamy?")
+                    await voice_engine.enqueue_speech(f"Siemanko {author_name}! Wbiłem na kanał {target_vc.name}. Słucham Cię cieplutko!")
                     return
 
-        # 4. KIEDY BOT ODPOWIADA? (ŻYWY MODEL, ODRÓŻNIAJĄCY ROZMÓWCÓW)
+        # 6. INTELIGENTNA SELEKCJA: KIEDY BOT ODPOWIADA? (Nie odpowiada na wszystko!)
         is_mentioned = bot.user in message.mentions
         is_reply_to_bot = (
             message.reference
@@ -266,61 +297,55 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             "mordo", "ziomek", "ej bot", "halo bot", "hej bot"
         ]
         words_in_msg = re.findall(r"\b\w+\b", c_low)
-        starts_or_calls_bot = any(trigger in words_in_msg[:3] for trigger in ["bot", "bocie", "aether", "ai", "chatgpt"]) or any(t in c_low for t in name_triggers)
-
-        # Powitania i wywołania na czacie (siema, elo, hejka, cześć, halooo)
-        greetings = ["siema", "siemanko", "hej", "hejka", "elo", "witam", "cześć", "czesc", "yo", "halo", "halooo", "siema bot", "co tam"]
-        is_greeting = any(g in c_low for g in greetings)
-
-        # Kontynuacja wątku (dialog w toku w ostatnich 180 sekundach)
-        time_since_reply = conv_tracker.time_since_last_bot_reply(message.channel.id)
-        is_continuation = (time_since_reply < 180.0) and (len(content) > 1) and not content.startswith("http")
-
-        # Spontaniczne włączanie się do dyskusji i pytań graczy
-        question_words = ["?", "co ", "jak ", "kiedy ", "dlaczego ", "gdzie ", "kto ", "czy "]
-        is_question = any(q in c_low for q in question_words)
-        curious_keywords = ["minecraft", "zsc", "szatek", "serwer", "projekt", "budujemy", "zbuduj", "co sądzicie", "jak myślicie", "ciekawe", "co robimy", "pomysł"]
-        has_curious_topic = any(k in c_low for k in curious_keywords)
-
-        can_chime_in = (time_since_reply > 25.0) and (len(content) > 2) and not content.startswith("http")
-        spontaneous_trigger = can_chime_in and (
-            (is_question and random.random() < 0.75) or
-            (has_curious_topic and random.random() < 0.60) or
-            (is_greeting and random.random() < 0.70) or
-            (random.random() < 0.15)
+        starts_or_calls_bot = (
+            any(trigger in words_in_msg[:3] for trigger in ["bot", "bocie", "aether", "ai", "chatgpt"])
+            or any(t in c_low for t in name_triggers)
         )
 
-        should_respond = is_mentioned or is_reply_to_bot or is_dm or starts_or_calls_bot or is_greeting or is_continuation or spontaneous_trigger
+        # Kontynuacja wątku: TYLKO jeśli w ostatnich 45s toczyła się rozmowa I pada pytanie
+        time_since_reply = conv_tracker.time_since_last_bot_reply(message.channel.id)
+        is_continuation = (
+            (time_since_reply < 45.0)
+            and len(clean_words) >= 2
+            and ("?" in content or any(content.lower().strip().startswith(w) for w in ["co", "jak", "dlaczego", "kiedy", "kto", "czy"]))
+            and not content.startswith("http")
+        )
 
-        if should_respond:
-            async with message.channel.typing():
-                clean_query = content.replace(f"<@{bot.user.id}>", "").strip()
-                if not clean_query:
-                    clean_query = "Co tam słychać?"
+        should_respond = is_mentioned or is_reply_to_bot or is_dm or starts_or_calls_bot or is_continuation
 
-                # Buduj kontekst pamięci dla TEGO serwera i TEGO użytkownika
-                memory_ctx = memory_vault.build_context_for_prompt(author_name, clean_query, guild_id, guild_name)
-                history = conv_tracker.get_history(message.channel.id)
+        if not should_respond:
+            # Gracz napisał coś do kogoś innego lub rzucił randomowe słowo (np. "Super", "Gówno")
+            # Bot milczy, aby nie spamować czatu!
+            return
 
-                # Generuj odpowiedź z modelu Super ChatGPT
-                reply = await ai_brain.generate_response(author_name, clean_query, memory_ctx, history)
+        async with message.channel.typing():
+            clean_query = content.replace(f"<@{bot.user.id}>", "").strip()
+            if not clean_query:
+                clean_query = "Co tam słychać?"
 
-                conv_tracker.add_message(message.channel.id, "Aether AI", reply, is_bot=True)
-                await message.reply(reply, mention_author=False)
+            # Buduj kontekst pamięci dla TEGO serwera i TEGO użytkownika
+            memory_ctx = memory_vault.build_context_for_prompt(author_name, clean_query, guild_id, guild_name)
+            history = conv_tracker.get_history(message.channel.id)
 
-                # ODTWÓRZ ODPOWIEDŹ CIEPŁYM GŁOSEM NA KANALE GŁOSOWYM
-                if voice_engine.is_connected():
-                    await voice_engine.enqueue_speech(reply)
-                    try:
-                        await message.add_reaction("🗣️")
-                    except Exception:
-                        pass
+            # Generuj odpowiedź z modelu Super ChatGPT
+            reply = await ai_brain.generate_response(author_name, clean_query, memory_ctx, history)
+
+            conv_tracker.add_message(message.channel.id, "Aether AI", reply, is_bot=True)
+            await message.reply(reply, mention_author=False)
+
+            # ODTWÓRZ ODPOWIEDŹ CIEPŁYM GŁOSEM NA KANALE GŁOSOWYM
+            if voice_engine.is_connected():
+                await voice_engine.enqueue_speech(reply)
+                try:
+                    await message.add_reaction("🗣️")
+                except Exception:
+                    pass
 
     # --- KOMENDY ---
 
-    @bot.command(name="dolacz", aliases=["join", "wbij", "dołącz", "wejdz", "wejdź", "chodz", "chodź", "wbijaj"])
+    @bot.command(name="dolacz", aliases=["join", "wbij", "dołącz", "wejdz", "wejdź", "chodz", "chodź", "choc", "choć", "wbijaj", "głosowy", "glosowy", "vc", "glosowt", "głosowt", "kanal", "kanał"])
     async def cmd_join(ctx: commands.Context, *, channel_name: Optional[str] = None):
-        """Dołącza bota do kanału głosowego (domyślnie '🤖・Testowanie・Bota・AI')."""
+        """Dołącza bota do kanału głosowego (domyślnie '🤖・Testowanie・Bota・AI' lub Twojego kanału)."""
         target_vc = None
         if channel_name:
             target_vc = find_best_voice_channel(ctx.guild, channel_name)
@@ -330,15 +355,47 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             target_vc = find_best_voice_channel(ctx.guild)
 
         if not target_vc:
-            await ctx.send("❌ Nie znaleziono kanału głosowego.")
+            await ctx.send("❌ Nie znaleziono kanału głosowego. Upewnij się, że jesteś na kanale głosowym!")
             return
 
         connected = await voice_engine.connect(target_vc)
         if connected:
             await ctx.send(f"🔊 Połączono z kanałem **{target_vc.name}**! Ciepły głos ChatGPT jest aktywny.")
-            await voice_engine.enqueue_speech(f"Siemanko {ctx.author.display_name}! Wszedłem na kanał {target_vc.name}. Słucham Cię.")
+            await voice_engine.enqueue_speech(f"Siemanko {ctx.author.display_name}! Wszedłem na kanał {target_vc.name}. Słucham Cię cieplutko!")
         else:
             await ctx.send(f"❌ Nie udało się połączyć z `{target_vc.name}`. Sprawdź uprawnienia bota.")
+
+    @bot.command(name="naucz")
+    async def cmd_learn_rule(ctx: commands.Context, *, rule_text: str):
+        """Uczy bota nowej reguły: !naucz banan => jabłko"""
+        guild_id = str(ctx.guild.id) if ctx.guild else None
+        guild_name = ctx.guild.name if ctx.guild else "Prywatny"
+        res = memory_vault.learn_from_message(ctx.author.display_name, f"!naucz {rule_text}", guild_id, guild_name)
+        if res:
+            await ctx.send(res)
+        else:
+            await ctx.send("ℹ️ Użycie: `!naucz <słowo> => <odpowiedź>`, np. `!naucz banan => jabłko`")
+
+    @bot.command(name="reguly", aliases=["reguły", "rules"])
+    async def cmd_show_rules(ctx: commands.Context):
+        """Wyświetla listę wszystkich wyuczonych reguł na serwerze."""
+        guild_id = str(ctx.guild.id) if ctx.guild else None
+        rules = memory_vault.get_rules(guild_id)
+        if not rules:
+            await ctx.send("ℹ️ Brak wyuczonych reguł na tym serwerze. Możesz dodać regułę pisząc: `jak ktoś napisze banan to odpisz jabłko`")
+            return
+        lines = [f"• **{k}** ➔ *{v['response']}* *(dodał: {v.get('added_by', 'ktoś')})*" for k, v in rules.items()]
+        await ctx.send(f"**🧠 Wyuczone reguły na serwerze ({len(rules)}):**\n" + "\n".join(lines))
+
+    @bot.command(name="zapomnij", aliases=["forget"])
+    async def cmd_forget_rule(ctx: commands.Context, *, trigger: str):
+        """Usuwa wyuczoną regułę ze serwera."""
+        guild_id = str(ctx.guild.id) if ctx.guild else None
+        ok = memory_vault.remove_rule(trigger, guild_id)
+        if ok:
+            await ctx.send(f"🗑️ Zapomniałem regułę dla słowa **{trigger}**.")
+        else:
+            await ctx.send(f"❌ Nie znaleziono reguły dla **{trigger}**.")
 
     @bot.command(name="wyjdz", aliases=["leave", "disconnect", "opusc"])
     async def cmd_leave(ctx: commands.Context):
