@@ -188,6 +188,8 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
                 print(f"[VOICE_GREETING] Mówię do {member.display_name}: {greeting}")
                 await voice_engine.enqueue_speech(greeting)
 
+    muted_channels = set()
+
     @bot.event
     async def on_message(message: discord.Message):
         if message.author == bot.user:
@@ -210,6 +212,22 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
 
         ch_name = getattr(message.channel, "name", "DM")
         print(f"[CHAT] [{author_name} w #{ch_name}]: {content}")
+
+        # 0. TRYB CISZY NA ŻYCZENIE ("nie odzywaj się", "nie pisz nic" vs "dobra można")
+        c_check = content.lower()
+        if any(m in c_check for m in ["nie odzywaj się", "nie odzywaj sie", "nie pisz nic", "bądź cicho", "badz cicho", "zamknij się"]):
+            muted_channels.add(message.channel.id)
+            try:
+                await message.add_reaction("🤐")
+            except Exception:
+                pass
+            return
+
+        if any(u in c_check for u in ["dobra można", "dobra mozna", "możesz pisać", "mozesz pisac", "odzywaj się", "odzywaj sie"]):
+            if message.channel.id in muted_channels:
+                muted_channels.discard(message.channel.id)
+                await message.reply("Super, wracam do rozmowy! 🚀", mention_author=False)
+                return
 
         # Zapisz w historii kanału
         conv_tracker.add_message(message.channel.id, author_name, content, is_bot=False)
@@ -310,6 +328,11 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             and ("?" in content or any(content.lower().strip().startswith(w) for w in ["co", "jak", "dlaczego", "kiedy", "kto", "czy"]))
             and not content.startswith("http")
         )
+
+        if message.channel.id in muted_channels and not is_mentioned:
+            return
+        elif is_mentioned:
+            muted_channels.discard(message.channel.id)
 
         should_respond = is_mentioned or is_reply_to_bot or is_dm or starts_or_calls_bot or is_continuation
 

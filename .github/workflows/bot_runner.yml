@@ -54,7 +54,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip uninstall -y davey || true
 
       - name: 🛡️ Maskowanie Tajemnic w Logach Runnera (Tarcza Anti-Leak)
         run: |
