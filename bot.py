@@ -161,12 +161,12 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
                     connected = await voice_engine.connect(vc)
                     if connected:
                         print(f"[DISCORD_BOT] Połączono z '{vc.name}'!")
-                        # Sprawdź czy ktoś już czeka na kanale
-                        humans = [m for m in vc.members if not m.bot]
-                        if humans:
-                            await voice_engine.enqueue_speech(f"Siemanko wszystkim! Dołączyłem do Was na kanał {vc.name}. Słucham i jestem z Wami!")
-                        else:
-                            await voice_engine.enqueue_speech("Aether AI jest gotowy! Jestem na kanale z ciepłym głosem.")
+                        powitanie = "Siemanko Szatek, siemanko Jagoda! Tu Aether AI. Jestem z Wami na kanale głosowym i słyszę Was głośno i wyraźnie! O czym dzisiaj gadamy?"
+                        await voice_engine.enqueue_speech(powitanie)
+                        try:
+                            await vc.send(f"🎙️ **Jestem na głosowym i mówię na żywo!** ({powitanie})")
+                        except Exception:
+                            pass
                     break
 
     @bot.event
@@ -189,6 +189,23 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
                 await voice_engine.enqueue_speech(greeting)
 
     muted_channels = set()
+
+    async def speak_on_vc(message: discord.Message, text_to_speak: str):
+        """Gwarantuje połączenie z kanałem głosowym rozmówcy i odtwarza mowę na żywo."""
+        if not voice_engine.is_connected() and message.guild:
+            target = (
+                message.author.voice.channel
+                if (hasattr(message.author, "voice") and message.author.voice and message.author.voice.channel)
+                else find_best_voice_channel(message.guild)
+            )
+            if target:
+                await voice_engine.connect(target)
+        if voice_engine.is_connected():
+            await voice_engine.enqueue_speech(text_to_speak)
+            try:
+                await message.add_reaction("🗣️")
+            except Exception:
+                pass
 
     @bot.event
     async def on_message(message: discord.Message):
@@ -237,8 +254,7 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         if matched_rule:
             print(f"[RULES] Wykryto dopasowanie reguły dla: '{content}' -> Odpowiedź: '{matched_rule}'")
             await message.reply(matched_rule, mention_author=False)
-            if voice_engine.is_connected():
-                await voice_engine.enqueue_speech(matched_rule)
+            await speak_on_vc(message, matched_rule)
             conv_tracker.add_message(message.channel.id, "Aether AI", matched_rule, is_bot=True)
             return
 
@@ -247,8 +263,7 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         if recalled_knowledge:
             print(f"[MEMORY_RECALL] Błyskawiczna odpowiedź z bazy pamięci na: '{content}'")
             await message.reply(recalled_knowledge, mention_author=False)
-            if voice_engine.is_connected():
-                await voice_engine.enqueue_speech(recalled_knowledge)
+            await speak_on_vc(message, recalled_knowledge)
             conv_tracker.add_message(message.channel.id, "Aether AI", recalled_knowledge, is_bot=True)
             return
 
@@ -263,8 +278,7 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
                 # Jeśli to jawne nauczenie reguły lub faktu, poinformuj użytkownika na czacie!
                 if any(k in learned_result.lower() for k in ["zapamiętałem", "nauczyłem", "zapisałem"]):
                     await message.reply(learned_result, mention_author=False)
-                    if voice_engine.is_connected():
-                        await voice_engine.enqueue_speech(learned_result)
+                    await speak_on_vc(message, learned_result)
                     return
 
         # 4. Obsługa komend bota (!)
@@ -357,12 +371,7 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             await message.reply(reply, mention_author=False)
 
             # ODTWÓRZ ODPOWIEDŹ CIEPŁYM GŁOSEM NA KANALE GŁOSOWYM
-            if voice_engine.is_connected():
-                await voice_engine.enqueue_speech(reply)
-                try:
-                    await message.add_reaction("🗣️")
-                except Exception:
-                    pass
+            await speak_on_vc(message, reply)
 
     # --- KOMENDY ---
 
