@@ -276,7 +276,7 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
                 except Exception:
                     pass
                 # Jeśli to jawne nauczenie reguły lub faktu, poinformuj użytkownika na czacie!
-                if any(k in learned_result.lower() for k in ["zapamiętałem", "nauczyłem", "zapisałem"]):
+                if any(k in learned_result.lower() for k in ["zapamiętałem", "nauczyłem", "zapisałem", "zakodowałem"]):
                     await message.reply(learned_result, mention_author=False)
                     await speak_on_vc(message, learned_result)
                     return

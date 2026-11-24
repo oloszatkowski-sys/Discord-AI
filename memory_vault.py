@@ -106,14 +106,14 @@ class MemoryVault:
                     "notes": "Zawsze witaj ją ciepło po imieniu Jagoda i odpowiadaj jej po kumpelsku."
                 },
                 "basista": {
-                    "canonical_name": "Basista",
-                    "aliases": ["basista", "bass", "basman"],
+                    "canonical_name": "Oliwier (Basista)",
+                    "aliases": ["basista", "oliwier", "bass", "basman"],
                     "roles": ["Członek serwera", "Ekipa graczy", "Muzyk / Basista"],
                     "facts": [
-                        "Znany i szanowany gracz w naszej społeczności.",
-                        "Związany z serwerem i ekipą Szatka."
+                        "Ma na imię Oliwier i jest znany jako Basista.",
+                        "Znany i szanowany gracz w naszej społeczności, związany z ekipą Szatka."
                     ],
-                    "notes": "Nasz człowiek od basu i dobrego klimatu na serwerze."
+                    "notes": "Oliwier to nasz człowiek od basu i dobrego klimatu na serwerze."
                 },
                 "core_facts": [
                     "ZSC to Zjednoczone Siły Creative - główna organizacja i sojusz graczy.",
@@ -419,10 +419,11 @@ class MemoryVault:
                 if trig and resp:
                     return self.add_rule(trig, resp, author_clean, guild_id, guild_name)
 
-        # 4. Jawne zapamiętywanie faktów ("zapamiętaj, że...", "pamiętaj: ...")
+        # 4. Jawne zapamiętywanie faktów ("zapamiętaj, że...", "pamiętaj: ...", "... zakoduj")
         trigger_prefixes = [
             "zapamiętaj, że", "zapamietaj, ze", "zapamiętaj że", "zapamietaj ze",
-            "zapamiętaj:", "zapamietaj:", "pamiętaj:", "pamietaj:", "zapisz:", "naucz się:"
+            "zapamiętaj:", "zapamietaj:", "pamiętaj:", "pamietaj:", "zapisz:", "naucz się:",
+            "zakoduj:", "zakoduj że", "zakoduj ze", "zakoduj"
         ]
         for prefix in trigger_prefixes:
             if c_low.startswith(prefix):
@@ -442,7 +443,21 @@ class MemoryVault:
                 })
                 self._save_vault()
                 self.sync_to_github()
-                return f"Zapamiętałem dla tego serwera: \"{fact_text}\" 🧠"
+                return f"Zakodowałem i zapamiętałem na stałe: \"{fact_text}\" 🧠"
+
+        if any(c_low.endswith(suf) for suf in ["zakoduj", "zakodować", "zakodowac", "zapamiętaj", "zapamietaj"]):
+            fact_text = re.sub(r"\s*(?:,?\s*)?(?:zakoduj|zakodować|zakodowac|zapamiętaj|zapamietaj)\s*$", "", content, flags=re.IGNORECASE).strip()
+            if fact_text and len(fact_text) >= 3 and self._is_safe_fact(fact_text):
+                new_id = len(server_store["facts"]) + 1
+                server_store["facts"].append({
+                    "id": new_id,
+                    "content": fact_text,
+                    "added_by": author_clean,
+                    "timestamp": now_iso
+                })
+                self._save_vault()
+                self.sync_to_github()
+                return f"Zakodowałem w pamięci serwera: \"{fact_text}\" 🧠"
 
         # 5. Definicje ("X to jest Y", "X to Y", "X oznacza Y")
         if " to jest " in c_low or " oznacza " in c_low:
@@ -486,6 +501,10 @@ class MemoryVault:
         q_low = query.lower().strip()
         q_clean = re.sub(r"[!?,.\"\']", " ", q_low).strip()
 
+        # Jeśli użytkownik wydaje instrukcję kodowania / nauki, pozwól zadziałać learn_from_message!
+        if any(w in q_clean for w in ["zakoduj", "zakodowac", "zakodować", "zapamiętaj", "zapamietaj", "naucz się", "naucz sie", "odpisz", "odpisuj"]):
+            return None
+
         server_store = self._get_server_store(guild_id, guild_name)
         global_lore = self.data.get("global_lore", {})
 
@@ -500,7 +519,7 @@ class MemoryVault:
                 lines.append(f"• **{jagoda.get('canonical_name')}** – {jagoda.get('facts', ['Nasza kumpela'])[0]}")
             basista = global_lore.get("basista", {})
             if basista:
-                lines.append(f"• **{basista.get('canonical_name')}** – {basista.get('facts', ['Nasz gracz'])[0]}")
+                lines.append(f"• **Oliwier (Basista)** – {basista.get('facts', ['Nasz gracz'])[0]}")
 
             # Wyuczone reguły
             rules = server_store.get("rules", {})
@@ -518,13 +537,11 @@ class MemoryVault:
 
         # Pytanie: "Wiesz kto to Jagoda?" / "Kim jest Jagoda?"
         if any(k in q_clean for k in ["jagoda", "jagodę", "jagody", "janow", "janowka", "j_janow3kq"]):
-            j = global_lore.get("jagoda", {})
-            return f"Jasne, że wiem! **Jagoda** (na serwerze znana też jako `j_janow3kq` / `Janow`) to nasza dobra kumpela z ekipy Szatka i zaufana testerka bota. Zawsze miło ją widzieć i słyszeć na kanale! 🚀"
+            return "Jasne, że wiem! **Jagoda** (na serwerze znana też jako `j_janow3kq` / `Janow`) to nasza dobra kumpela z ekipy Szatka i zaufana testerka bota. Zawsze miło ją widzieć i słyszeć na kanale! 🚀"
 
-        # Pytanie: "Wiesz kto to Basista?" / "Kim jest Basista?"
-        if any(k in q_clean for k in ["basista", "basisty", "bassist"]):
-            b = global_lore.get("basista", {})
-            return f"Pewnie! **Basista** to znany i lubiany członek naszej ekipy na serwerze. Nasz człowiek od basu, gier i dobrego serwerowego klimatu! 🎸"
+        # Pytanie: "Wiesz kto to Basista / Oliwier?" / "Kim jest Oliwier?"
+        if any(k in q_clean for k in ["basista", "basisty", "bassist", "oliwier", "oliwiera"]):
+            return "Pewnie! **Oliwier** to nasz **Basista** (a Basista to Oliwier!) – znany i lubiany członek naszej ekipy na serwerze, człowiek od basu, gier i dobrego serwerowego klimatu! 🎸"
 
         # Pytanie: "Wiesz kto to Szatek?" / "Kim jest Szatek?"
         if any(k in q_clean for k in ["szatek", "szatek_olo", "olo", "szatek_010"]):

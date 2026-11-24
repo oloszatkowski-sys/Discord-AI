@@ -90,7 +90,14 @@ class DiscordVoiceEngine:
 
             print(f"[VOICE_ENGINE] Łączenie z kanałem głosowym '{channel.name}' (ID: {channel.id})...")
             self.voice_client = await channel.connect(reconnect=True, timeout=20.0)
-            await asyncio.sleep(0.5)
+            # Poczekaj na zakończenie uzgadniania kluczy DAVE MLS E2EE (do 3.0s)
+            conn = getattr(self.voice_client, "_connection", None)
+            wait_dave = 0.0
+            while conn and getattr(conn, "dave_protocol_version", 0) > 0 and not getattr(conn, "can_encrypt", False) and wait_dave < 3.0:
+                await asyncio.sleep(0.15)
+                wait_dave += 0.15
+            if conn:
+                print(f"[VOICE_ENGINE] 🔒 Status DAVE E2EE: v={getattr(conn, 'dave_protocol_version', 0)}, can_encrypt={getattr(conn, 'can_encrypt', False)} (czas: {wait_dave:.2f}s)")
             return True
         except Exception as e:
             print(f"[VOICE_ENGINE] Błąd połączenia z kanałem {channel.name}: {e}")
