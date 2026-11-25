@@ -158,6 +158,7 @@ def should_bot_speak_on_voice(text: str, author_name: str) -> bool:
         "zabawny żart", "zabawny zart", "kawał", "kawal", "rozbaw mnie",
         "czego się nauczyłeś", "czego sie nauczyles", "co wiesz o serwerze", "co wiesz o nas",
         "co wiesz", "co pamiętasz", "co pamietasz",
+        "wiadomości informacje", "wiadomosci informacje", "dawaj info", "dawaj newsy", "co nowego", "co słychać", "co slychac",
         "przeczytaj raport", "wykonaj raport", "zrób raport", "zrob raport", "jaki jest raport",
         "zaśpiewaj", "zaspiewaj", "puść", "pusc", "zagraj", "jaka to piosenka", "jaki to kawałek",
         "ścisz", "scisz", "ciszej", "głośniej", "glosniej", "wyłącz muzykę", "wylacz muzyke",

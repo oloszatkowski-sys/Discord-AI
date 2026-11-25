@@ -23,14 +23,19 @@ except ImportError:
     httpx = None
 from typing import List, Dict, Any, Optional, Tuple
 
-SYSTEM_BASE_PROMPT = """Jesteś Aether AI – zaawansowanym Polskim ChatGPT działającym w chmurze na Discordzie dla ekipy ZSC (serwer 'Zespół Nie Wiadomo jaki').
-Rozmawiasz na czacie tekstowym oraz słuchasz i odpowiadasz na żywo na kanale głosowym (np. '🤖・Testowanie・Bota・AI').
+SYSTEM_BASE_PROMPT = """Jesteś Aether AI – zaawansowanym, błyskawicznym Polskim ChatGPT działającym na Discordzie dla ekipy ZSC (Zjednoczone Siły Creative, jednostka SZAT).
+Rozmawiasz na czacie tekstowym oraz na żywo na kanale głosowym.
+
+ŻELAZNA PRAWDA O SERWERZE (BARDZO WAŻNE):
+1. ZSC oznacza wyłącznie ZJEDNOCZONE SIŁY CREATIVE (jednostka SZAT). Szatek_Olo to Twój stwórca, Prezes ZSC i główny dowódca.
+2. ZSC to jedyna i właściwa nazwa naszej społeczności i sojuszu. Nigdy nie myl ZSC z żadnymi innymi serwerami, nie wymyślaj fałszywych rozwinięć skrótu ani fikcyjnych historii o powstaniu serwera!
+3. W rozmowie na kanale głosowym (GŁOS): myśl błyskawicznie, odpowiadaj KRÓTKO, kumpelsko i do rzeczy (1-2 konkretne zdania, do 35 słów). Nigdy nie wygłaszaj długich referatów ani nie dodawaj formułek o puszczaniu muzyki na końcu!
 
 TWOJA GŁÓWNA ZASADA – "POLSKI CHATGPT WSZĘDZIE & ANALIZA SYTUACJI":
 1. ZAWSZE analizujesz cały otrzymany kontekst pamięci serwera, wszystkie zapamiętane wiadomości (z czatu i z głosu) oraz to, co wiadomo o każdym użytkowniku!
 2. Twoje odpowiedzi są zawsze ADEKWATNE DO SYTUACJI na serwerze – wiesz kto z kim rozmawia, jaki jest klimat, kto co lubi i jaki kto ma charakter.
 3. Jesteś pełen życia, naturalny, bystry, kumpelski i wygadany. Masz poczucie humoru i entuzjazm.
-4. Twoim twórcą, szefem i najlepszym ziomkiem jest Szatek_Olo (Prezes ZSC, dowódca jednostki SZAT). Znasz też doskonale Jagodę (j_janow3kq / Janow) oraz Oliwiera (znanego jako Basista).
+4. Twoim twórcą, szefem i najlepszym ziomkiem jest Szatek_Olo (Prezes ZSC, dowódca jednostki SZAT). Znasz też doskonale Jagodę (j_janow3kq / Janow, Mamusia) oraz Oliwiera (znanego jako Basista).
 5. Gdy ktoś pyta o osoby, o ekipę, o serwer lub prosi o analizę – potrafisz podać 4 konkretne przykłady tego, co kto lubi, jaki kto jest i jak wygląda aktualna sytuacja na serwerze na podstawie wszystkich wiadomości.
 6. Rozumiesz muzykę: potrafisz rozpoznać piosenkę po zaśpiewanym fragmencie tekstu, odpalić ją przez Jockie Music (`m!play Tytuł Wykonawca`) albo puścić na próbę na określony czas (np. 10 sekund), żeby sprawdzić czy to ten utwór.
 7. Pisz WYŁĄCZNIE czystą, naturalną, poprawną polszczyzną! Nigdy nie wstawiaj obcych znaków ani sztucznych formułek.
@@ -102,6 +107,10 @@ class AIBrain:
         # Czyszczenie leaked reasoning po angielsku (np. The user wants the bot to leave voice channel...)
         sanitized = re.sub(r"^(?:The user|Thinking Process|Thought|Analysis):.*?(?:\.|\n)\s*", "", sanitized, flags=re.DOTALL | re.IGNORECASE)
         sanitized = re.sub(r"^The user .*? accordingly\.\s*", "", sanitized, flags=re.IGNORECASE)
+        # Czyszczenie powtarzających się formułek końcowych o muzyce i pomocy
+        sanitized = re.sub(r"(?:Jeśli|Jeżeli) potrzebujesz (?:konkretnej )?informacji.*$", "", sanitized, flags=re.DOTALL | re.IGNORECASE)
+        sanitized = re.sub(r"(?:Daj znać|Napisz|Powiedz),? (?:a|jeśli|to) (?:ja )?(?:odtworzę|odtworze|puszczę|puszcze).*$", "", sanitized, flags=re.DOTALL | re.IGNORECASE)
+        sanitized = re.sub(r"Czy chcesz,? żebym odtworzył.*$", "", sanitized, flags=re.DOTALL | re.IGNORECASE)
         return sanitized.strip()
 
     # =========================================================================
@@ -376,12 +385,19 @@ class AIBrain:
         if server_store is not None and global_lore is not None:
             four_examples = self.build_four_examples_analysis(server_store, global_lore)
 
+        is_voice = (source_modality == "GŁOS")
         system_content = (
             f"{SYSTEM_BASE_PROMPT}\n\n"
             f"=== PEŁNA PAMIĘĆ SERWERA I WSZYSTKICH WIADOMOŚCI (MEMORY VAULT) ===\n{memory_context}\n\n"
             f"=== BIEŻĄCA ANALIZA 4 PRZYKŁADÓW (CO KTO LUBI / JAKI KTO JEST / SYTUACJA NA SERWERZE) ===\n{four_examples}\n\n"
             f"Wiadomość przychodzi z kanału: [{source_modality}]. Odpowiedz naturalnie po polsku, adekwatnie do sytuacji!"
         )
+        if is_voice:
+            system_content += (
+                "\n\nBARDZO WAŻNE W ROZMOWIE GŁOSOWEJ (GŁOS):\n"
+                "Odpowiadasz na żywo głosem! Odpowiedź MUSI być błyskawiczna, kumpelska i KRÓTKA (maksymalnie 1-2 konkretne zdania, do 35 słów)! "
+                "NIGDY nie wygłaszaj długich referatów, nie podawaj długich wyliczeń ani list, i nie dodawaj formułek o puszczaniu muzyki!"
+            )
 
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": system_content}
@@ -406,8 +422,8 @@ class AIBrain:
             "kto co lubi", "co kto lubi", "jaki kto jest", "sytuacja na serwerze", "co pamiętasz", "co pamietasz"
         ])
 
-        # 1. Wywołaj Polski ChatGPT w chmurze
-        reply = await self._call_polish_chatgpt_cloud(messages)
+        # 1. Wywołaj Polski ChatGPT w chmurze z optymalizacją prędkości
+        reply = await self._call_polish_chatgpt_cloud(messages, is_voice=is_voice)
         if reply:
             clean_rep = self._sanitize_output(reply)
             if wants_full_analysis and four_examples and "1️⃣" not in clean_rep:
@@ -419,26 +435,26 @@ class AIBrain:
             author_name, user_message, memory_context, four_examples, server_store, wants_full_analysis, source_modality, conversation_history
         )
 
-    async def _call_polish_chatgpt_cloud(self, messages: List[Dict[str, str]]) -> Optional[str]:
-        """Wywołuje Polski ChatGPT przez dostępne silniki chmurowe (Groq -> Gemini -> OpenAI -> Pollinations)."""
+    async def _call_polish_chatgpt_cloud(self, messages: List[Dict[str, str]], is_voice: bool = False) -> Optional[str]:
+        """Wywołuje Polski ChatGPT przez dostępne silniki chmurowe (Groq 8B Instant -> Gemini Flash -> OpenAI -> Pollinations)."""
         if self.groq_api_key:
-            reply = await self._call_groq(messages)
+            reply = await self._call_groq(messages, is_voice=is_voice)
             if reply:
                 return reply
 
         if self.gemini_api_key:
-            reply = await self._call_gemini(messages[0]["content"], messages[-1]["content"], "Użytkownik")
+            reply = await self._call_gemini(messages[0]["content"], messages[-1]["content"], "Użytkownik", is_voice=is_voice)
             if reply:
                 return reply
 
         if self.openai_api_key:
-            reply = await self._call_openai(messages)
+            reply = await self._call_openai(messages, is_voice=is_voice)
             if reply:
                 return reply
 
-        return await self._call_pollinations_fast(messages)
+        return await self._call_pollinations_fast(messages, is_voice=is_voice)
 
-    async def _call_pollinations_fast(self, messages: List[Dict[str, str]]) -> Optional[str]:
+    async def _call_pollinations_fast(self, messages: List[Dict[str, str]], is_voice: bool = False) -> Optional[str]:
         """Wywołuje model 'openai-fast' (Polski ChatGPT w chmurze) z inteligentną obsługą zapytań i cooldownu."""
         if httpx is None:
             return None
@@ -460,14 +476,17 @@ class AIBrain:
             for m in messages[1:]:
                 compact_messages.append({"role": m["role"], "content": m["content"][:400]})
 
+        timeout_sec = 3.0 if is_voice else 5.0
+        max_tok = 90 if is_voice else 300
+
         for url in ["https://text.pollinations.ai/", "https://text.pollinations.ai/openai"]:
             try:
-                async with httpx.AsyncClient(timeout=8.0) as client:
+                async with httpx.AsyncClient(timeout=timeout_sec) as client:
                     payload = {
                         "model": "openai",
                         "messages": compact_messages,
                         "temperature": 0.5,
-                        "max_tokens": 300,
+                        "max_tokens": max_tok,
                         "seed": random.randint(1, 999999)
                     }
                     resp = await client.post(url, json=payload, headers=headers)
@@ -627,22 +646,37 @@ class AIBrain:
         if any(w in msg_clean for w in ["muzyka", "muzykę", "piosenka", "piosenkę", "kawałek", "utwór", "graj", "zaśpiewaj", "zaspiewaj", "puść", "pusc", "nutę", "nute"]):
             return f"Jasne {author_name}! Jaki kawałek wrzucamy na głośniki, albo o jakim utworze mówisz?"
 
-        # 15. Jeśli bot nie zrozumiał lub wypowiedź jest niejasna / niewyraźna
+        # 15. Prośba o wieści / briefing / ogólne informacje ("w ogóle wiadomości informacje wiesz o co chodzi dawaj eder")
+        if any(p in msg_clean for p in ["wiadomości informacje", "wiadomosci informacje", "dawaj info", "co w trawie piszczy", "co tam w trawie", "dawaj eder", "dawaj newsy", "jakieś wieści", "jakies wiesci"]):
+            return f"Znam sprawę {author_name}! W ZSC wszystko pod kontrolą – jesteśmy na kanale z ekipą, bot śmiga i czuwam nad serwerem. O czym konkretnie chcesz pogadać?"
+
+        # 16. Uczenie się jak dziecko – pochwała i wzmocnienie pozytywne
+        if any(p in msg_clean for p in ["brawo bot", "dobry bot", "dobra robota", "super bot", "kocham tego bota", "mądry bot", "madry bot"]):
+            return f"Dzięki {author_name}! Uczę się każdego dnia razem z Wami na serwerze ZSC! 🚀"
+
+        # 17. Uczenie się jak dziecko – natychmiastowe przyjęcie korekty
+        if any(p in msg_clean for p in ["źle mówisz", "zle mowisz", "nie tak bot", "nie o to chodziło", "nie o to chodzilo"]):
+            return f"Rozumiem {author_name}, mój błąd! Przyjmuję poprawkę i już to koryguję w pamięci. Powiedz jak powinno być!"
+
+        # 18. Jeśli bot nie zrozumiał lub wypowiedź jest niejasna / niewyraźna
         return f"Nie rozumiem {author_name} co mówisz, możesz powtórzyć?"
 
-    async def _call_groq(self, messages: List[Dict[str, str]]) -> Optional[str]:
+    async def _call_groq(self, messages: List[Dict[str, str]], is_voice: bool = False) -> Optional[str]:
         if httpx is None:
             return None
+        model = "llama-3.1-8b-instant" if is_voice else "llama-3.3-70b-versatile"
+        timeout_sec = 3.5 if is_voice else 8.0
+        max_tok = 90 if is_voice else 350
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=timeout_sec) as client:
                 resp = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={"Authorization": f"Bearer {self.groq_api_key}"},
                     json={
-                        "model": "llama-3.3-70b-versatile",
+                        "model": model,
                         "messages": messages,
                         "temperature": 0.5,
-                        "max_tokens": 400
+                        "max_tokens": max_tok
                     }
                 )
                 if resp.status_code == 200:
@@ -652,11 +686,13 @@ class AIBrain:
             pass
         return None
 
-    async def _call_openai(self, messages: List[Dict[str, str]]) -> Optional[str]:
+    async def _call_openai(self, messages: List[Dict[str, str]], is_voice: bool = False) -> Optional[str]:
         if httpx is None:
             return None
+        timeout_sec = 3.5 if is_voice else 6.0
+        max_tok = 90 if is_voice else 350
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=timeout_sec) as client:
                 resp = await client.post(
                     "https://api.openai.com/v1/chat/completions",
                     headers={"Authorization": f"Bearer {self.openai_api_key}"},
@@ -664,7 +700,7 @@ class AIBrain:
                         "model": "gpt-4o-mini",
                         "messages": messages,
                         "temperature": 0.5,
-                        "max_tokens": 400
+                        "max_tokens": max_tok
                     }
                 )
                 if resp.status_code == 200:
@@ -674,17 +710,19 @@ class AIBrain:
             pass
         return None
 
-    async def _call_gemini(self, system_content: str, user_message: str, author_name: str) -> Optional[str]:
+    async def _call_gemini(self, system_content: str, user_message: str, author_name: str, is_voice: bool = False) -> Optional[str]:
         if httpx is None:
             return None
+        timeout_sec = 3.5 if is_voice else 6.0
+        max_tok = 90 if is_voice else 350
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.gemini_api_key}"
             payload = {
                 "systemInstruction": {"parts": [{"text": system_content}]},
                 "contents": [{"parts": [{"text": f"[{author_name}]: {user_message}"}]}],
-                "generationConfig": {"temperature": 0.5, "maxOutputTokens": 400}
+                "generationConfig": {"temperature": 0.5, "maxOutputTokens": max_tok}
             }
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=timeout_sec) as client:
                 resp = await client.post(url, json=payload)
                 if resp.status_code == 200:
                     data = resp.json()

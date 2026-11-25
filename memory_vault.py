@@ -90,6 +90,7 @@ class MemoryVault:
                     "facts": [
                         "Jest Prezesem ZSC (Zjednoczonych Sił Creative) oraz założycielem X Mods Company.",
                         "Główny dowódca, twórca bota Aether AI i najlepszy przyjaciel AI.",
+                        "ZSC to Zjednoczone Siły Creative (jednostka SZAT). Serwer 'Zespół Nie Wiadomo jaki' to zupełnie obcy serwer i NIE MA żadnego związku z ZSC.",
                         "NIE JEST prezydentem Republiki Creative (ważne sprostowanie)."
                     ],
                     "notes": "Twój szef, stwórca i kumpel. Traktuj go z szacunkiem, lojalnością i humorem."
@@ -139,6 +140,13 @@ class MemoryVault:
                 for k, v in default_lore.items():
                     if k not in self.data["global_lore"]:
                         self.data["global_lore"][k] = v
+
+            # Upewnij się, że sprostowanie ZSC jest obecne w pamięci
+            zsc_fact = "ZSC to Zjednoczone Siły Creative (jednostka SZAT). Serwer 'Zespół Nie Wiadomo jaki' to zupełnie obcy serwer i NIE MA żadnego związku z ZSC."
+            if "global_lore" in self.data and "szatek_olo" in self.data["global_lore"]:
+                facts = self.data["global_lore"]["szatek_olo"].setdefault("facts", [])
+                if zsc_fact not in facts:
+                    facts.append(zsc_fact)
 
             # Upewnij się, że każdy serwer ma pole rules i chat_log
             if "servers" not in self.data:

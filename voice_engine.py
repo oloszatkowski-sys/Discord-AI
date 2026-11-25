@@ -14,6 +14,7 @@ Odpowiada za:
 
 import os
 import re
+import io
 import time
 import wave
 import uuid
@@ -299,7 +300,7 @@ class DiscordVoiceEngine:
     async def _stt_monitor_loop(self):
         """Monitoruje bufory głosowe użytkowników i po wykryciu końca wypowiedzi uruchamia STT po polsku."""
         while True:
-            await asyncio.sleep(0.20)
+            await asyncio.sleep(0.06)
             try:
                 if not self._user_audio_buffers:
                     continue
@@ -309,8 +310,8 @@ class DiscordVoiceEngine:
                 for uid, buf in list(self._user_audio_buffers.items()):
                     silence_dur = now - buf["last_ts"]
                     total_dur = buf["last_ts"] - buf["start_ts"]
-                    # Szybsza reakcja: 0.80s ciszy lub 10s ciągłej wypowiedzi
-                    if silence_dur >= 0.80 or total_dur >= 10.0:
+                    # Turbo-szybka reakcja: 0.38s ciszy lub 8.5s ciągłej wypowiedzi
+                    if silence_dur >= 0.38 or total_dur >= 8.5:
                         ready_uids.append(uid)
 
                 for uid in ready_uids:
@@ -331,11 +332,10 @@ class DiscordVoiceEngine:
                 print(f"[VOICE_ENGINE] Błąd w pętli STT: {e}")
 
     async def _transcribe_and_dispatch(self, member: discord.Member, raw_pcm: bytes):
-        """Wzmacnia cichy mikrofon (Auto-Gain Control), zamienia na tekst po polsku (pl-PL) i przekazuje do Polskiego ChatGPT."""
+        """Wzmacnia cichy mikrofon (Auto-Gain Control), zamienia na tekst po polsku (pl-PL) bez operacji dyskowych i przekazuje do AI."""
         if not HAS_SR:
             return
         import array
-        wav_path = os.path.join(TEMP_AUDIO_DIR, f"stt_{uuid.uuid4().hex[:8]}.wav")
         try:
             def _save_and_recognize() -> Optional[str]:
                 pcm_to_write = raw_pcm
@@ -350,14 +350,17 @@ class DiscordVoiceEngine:
                 except Exception:
                     pass
 
-                with wave.open(wav_path, "wb") as wf:
+                # Wykorzystaj strumień RAM (io.BytesIO) zamiast wolnego zapisu i odczytu pliku z dysku!
+                wav_io = io.BytesIO()
+                with wave.open(wav_io, "wb") as wf:
                     wf.setnchannels(2)
                     wf.setsampwidth(2)
                     wf.setframerate(48000)
                     wf.writeframes(pcm_to_write)
+                wav_io.seek(0)
 
                 recognizer = sr.Recognizer()
-                with sr.AudioFile(wav_path) as source:
+                with sr.AudioFile(wav_io) as source:
                     audio_data = recognizer.record(source)
                 return recognizer.recognize_google(audio_data, language="pl-PL")
 
@@ -603,14 +606,19 @@ class DiscordVoiceEngine:
                 if os.path.exists(wav_path) and self.voice_client and self.voice_client.is_connected():
                     print(f"[VOICE_ENGINE] ▶️ Odtwarzanie na VC: '{text}'")
                     source = discord.FFmpegPCMAudio(wav_path)
-                    self.voice_client.play(source)
+                    
+                    playback_done = asyncio.Event()
+                    loop = asyncio.get_running_loop()
 
-                    await asyncio.sleep(0.2)
-                    elapsed = 0.0
-                    while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing() and elapsed < 40.0:
-                        await asyncio.sleep(0.15)
-                        elapsed += 0.15
-                    print(f"[VOICE_ENGINE] ✅ Zakończono mówienie ({elapsed:.1f}s).")
+                    def _after_play(err):
+                        if err:
+                            print(f"[VOICE_ENGINE] Uwaga podczas odtwarzania mowy: {err}")
+                        loop.call_soon_threadsafe(playback_done.set)
+
+                    self.voice_client.play(source, after=_after_play)
+                    # Czytaj ZAWSZE do samego końca bez sztucznych limitów czasowych!
+                    await playback_done.wait()
+                    print(f"[VOICE_ENGINE] ✅ Zakończono mówienie całości tekstu!")
 
             except Exception as e:
                 print(f"[VOICE_ENGINE] Błąd podczas syntezy/odtwarzania: {e}")
