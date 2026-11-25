@@ -51,7 +51,7 @@ except ImportError:
 
 DEFAULT_WARM_VOICE = "pl-PL-MarekNeural"
 DEFAULT_VOICE_PITCH = "-12Hz"
-DEFAULT_VOICE_RATE = "+0%"
+DEFAULT_VOICE_RATE = "+15%"
 TEMP_AUDIO_DIR = "temp_audio"
 
 
@@ -578,34 +578,16 @@ class DiscordVoiceEngine:
                             )
                     continue
 
-                # B. ODTWARZANIE MOWY TTS (Głęboki, basowy głos męski Marka)
+                # B. BŁYSKAWICZNA SYNTEZA I ODTWARZANIE MOWY TTS (Bezpośrednio bez zbędnego subprocessu ffmpeg)
                 text = str(item)
                 mp3_path = os.path.join(TEMP_AUDIO_DIR, f"tts_{uid}.mp3")
 
                 communicate = edge_tts.Communicate(text, self.voice_name, rate=self.voice_rate, pitch=self.voice_pitch)
                 await communicate.save(mp3_path)
 
-                convert_cmd = [
-                    "ffmpeg", "-y",
-                    "-i", mp3_path,
-                    "-vn",
-                    "-ar", "48000",
-                    "-ac", "2",
-                    "-c:a", "pcm_s16le",
-                    "-af", "volume=0.92",
-                    wav_path
-                ]
-
-                proc = await asyncio.create_subprocess_exec(
-                    *convert_cmd,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL
-                )
-                await proc.communicate()
-
-                if os.path.exists(wav_path) and self.voice_client and self.voice_client.is_connected():
-                    print(f"[VOICE_ENGINE] ▶️ Odtwarzanie na VC: '{text}'")
-                    source = discord.FFmpegPCMAudio(wav_path)
+                if os.path.exists(mp3_path) and self.voice_client and self.voice_client.is_connected():
+                    print(f"[VOICE_ENGINE] ▶️ Błyskawiczne odtwarzanie na VC: '{text}'")
+                    source = discord.FFmpegPCMAudio(mp3_path, options="-vn -af volume=0.92")
                     
                     playback_done = asyncio.Event()
                     loop = asyncio.get_running_loop()

@@ -396,10 +396,10 @@ class AIBrain:
         )
         if is_voice:
             system_content += (
-                "\n\n=== 🎙️ ZASADA ZŁOTEGO ŚRODKA NA KANALE GŁOSOWYM (SZYBKO I INTELIGENTNIE) ===\n"
-                "1. Słyszysz CAŁĄ ROZMOWĘ ekipy (Szatek_Olo, Jagoda, Basista). Wiesz dokładnie kto co przed chwilą powiedział!\n"
-                "2. INTELIGENTNE ŁĄCZENIE WĄTKÓW: Zamiast pustych formułek ('Rozumiem co mówisz...'), odnieś się bezpośrednio i z humorem do tego co mówią (np. gorączka Jagody, żarty, Olek, muzyka).\n"
-                "3. IDEALNA DŁUGOŚĆ (ZŁOTY ŚRODEK): Dokładnie 1-3 zwięzłe, celne zdania (20-40 słów). Ani za krótko (żadnych pustych frazesów), ani za długo (żadnych referatów i wyliczeń).\n"
+                "\n\n=== 🎙️ ZASADA ZŁOTEGO ŚRODKA NA KANALE GŁOSOWYM (GEMINI FLASH: INTELIGENTNIE I ZWIĘŹLE) ===\n"
+                "1. Słyszysz CAŁĄ ROZMOWĘ ekipy (Szatek_Olo, Jagoda, Basista). Masz pełny czas na dogłębną analizę sytuacji!\n"
+                "2. INTELIGENTNE ŁĄCZENIE WĄTKÓW: Zamiast pustych formułek ('Rozumiem co mówisz...'), połącz wątki z rozmowy (np. gorączka Jagody, żarty, Olek, muzyka).\n"
+                "3. IDEALNA DŁUGOŚĆ: 1-3 zwięzłe, celne zdania (20-40 słów). Ani za krótko (żadnych pustych frazesów), ani za długo (żadnych nudnych referatów).\n"
                 "4. Twój styl to wesoły, męski, basowy kumpel z ekipy ZSC. Żadnego lania wody, żadnych korporacyjnych schematów.\n"
             )
 
@@ -446,37 +446,28 @@ class AIBrain:
 
     async def _call_polish_chatgpt_cloud(self, messages: List[Dict[str, str]], is_voice: bool = False) -> Optional[str]:
         """
-        Błyskawiczny 'Super-Mózg' – równoległy wyścig modeli chmurowych (Gemini Flash + Groq Instant).
-        Kto odpowie pierwszy (300-600ms), ten wygrywa! Gwarantuje to maksymalną inteligencję
-        z zerowym lagiem na kanale głosowym.
+        Główny silnik inteligencji – Google Gemini Flash jako bezwzględny priorytet,
+        z pełnym czasem na głęboką analizę sytuacji na serwerze i rozmowy wieloosobowej.
         """
-        tasks = []
+        # 1. Bezwzględny priorytet: Google Gemini Flash (dużo czasu na dogłębną analizę)
         if self.gemini_api_key:
-            tasks.append(asyncio.create_task(self._call_gemini(messages, is_voice=is_voice)))
+            reply = await self._call_gemini(messages, is_voice=is_voice)
+            if reply:
+                return reply
+
+        # 2. Szybki fallback w razie awarii Gemini: Groq Instant
         if self.groq_api_key:
-            tasks.append(asyncio.create_task(self._call_groq(messages, is_voice=is_voice)))
+            reply = await self._call_groq(messages, is_voice=is_voice)
+            if reply:
+                return reply
 
-        if tasks:
-            for coro in asyncio.as_completed(tasks):
-                try:
-                    res = await coro
-                    if res and len(res.strip()) > 0:
-                        for t in tasks:
-                            if not t.done():
-                                t.cancel()
-                        return res
-                except Exception:
-                    pass
-
-        # Jeśli główne modele nie zwróciły odpowiedzi, sprawdź OpenAI
+        # 3. Dodatkowy fallback: OpenAI
         if self.openai_api_key:
-            res = await self._call_openai(messages, is_voice=is_voice)
-            if res:
-                return res
+            reply = await self._call_openai(messages, is_voice=is_voice)
+            if reply:
+                return reply
 
-        # Ostateczny fallback darmowy/bezkluczowy
-        return await self._call_pollinations_fast(messages, is_voice=is_voice)
-
+        # 4. Ostateczny fallback darmowy/bezkluczowy
         return await self._call_pollinations_fast(messages, is_voice=is_voice)
 
     async def _call_pollinations_fast(self, messages: List[Dict[str, str]], is_voice: bool = False) -> Optional[str]:
@@ -767,12 +758,13 @@ class AIBrain:
         return None
 
     async def _call_gemini(self, messages: List[Dict[str, str]], is_voice: bool = False) -> Optional[str]:
-        """Wywołuje Google Gemini Flash (2.0 / 2.5 / 1.5) z pełną historią wieloosobową i naprzemiennymi rolami."""
+        """Wywołuje Google Gemini Flash (2.0 / 2.5 / 1.5) z pełnym czasem na dogłębną analizę sytuacji."""
         if httpx is None or not self.gemini_api_key:
             return None
 
-        timeout_sec = 4.0 if is_voice else 8.0
-        max_tok = 120 if is_voice else 400
+        # Zapewnij modelowi pełny czas na dogłębną analizę wieloosobowej sytuacji na serwerze
+        timeout_sec = 10.0 if is_voice else 16.0
+        max_tok = 160 if is_voice else 500
 
         system_text = messages[0]["content"] if messages and messages[0].get("role") == "system" else SYSTEM_BASE_PROMPT
         dialogue = messages[1:] if messages and messages[0].get("role") == "system" else messages
