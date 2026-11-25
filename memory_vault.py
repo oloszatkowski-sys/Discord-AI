@@ -31,6 +31,17 @@ VAULT_ENC_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowl
 DEFAULT_KEY_ENV = "VAULT_ENCRYPTION_KEY"
 DEFAULT_SECRET_FALLBACK = "AETHER_DEFAULT_LOCAL_VAULT_KEY_2026_CHANGE_IN_PROD"
 
+POLISH_STOPWORDS = {
+    'to', 'jest', 'było', 'bylo', 'będzie', 'bedzie', 'nie', 'tak', 'mam', 'masz', 'ma',
+    'dla', 'ze', 'że', 'co', 'kto', 'ile', 'jak', 'gdzie', 'kiedy', 'po', 'za', 'od',
+    'do', 'na', 'w', 'z', 'o', 'u', 'i', 'a', 'ale', 'lub', 'albo', 'czy', 'by', 'bo',
+    'tylko', 'zanim', 'juz', 'już', 'znowu', 'odpisze', 'minie', 'wieczność', 'wiecznosc',
+    'tam', 'tu', 'sie', 'się', 'mnie', 'ciebie', 'cie', 'cię', 'go', 'jej', 'nas', 'was',
+    'ich', 'on', 'ona', 'oni', 'ono', 'ten', 'ta', 'te', 'tego', 'tej', 'temu', 'tym',
+    'ktoś', 'ktos', 'coś', 'cos', 'nic', 'wszystko', 'zawsze', 'nigdy', 'teraz', 'potem',
+    'zaraz', 'chyba', 'może', 'moze', 'dobra', 'dobrze', 'źle', 'zle', 'kurwa', 'chuj', 'ja', 'bus'
+}
+
 
 def _derive_aes_key(secret_str: str) -> bytes:
     """Tworzy stabilny, 256-bitowy (32 bajty) klucz AES z podanego sekretu."""
@@ -85,7 +96,7 @@ class MemoryVault:
             "global_lore": {
                 "szatek_olo": {
                     "canonical_name": "Szatek_Olo",
-                    "aliases": ["szatek", "szatek_olo", "szatek_010", "olo", "prezes"],
+                    "aliases": ["szatek", "szatek_olo", "szatek_010", "olo", "prezes", "olek", "olka", "olkowi", "olkiem"],
                     "roles": ["Prezes ZSC", "Dowódca jednostki SZAT", "Główny Twórca & Administrator"],
                     "facts": [
                         "Jest Prezesem ZSC (Zjednoczonych Sił Creative) oraz założycielem X Mods Company.",
@@ -275,12 +286,11 @@ class MemoryVault:
             if "chat_log" not in self.data["servers"][g_id]:
                 self.data["servers"][g_id]["chat_log"] = []
 
-        # Oczyszczenie fałszywych definicji ze słów pytających (np. 'bus' -> 'Kto' z pytania 'konik kto to bus')
-        bad_keys = ["bus", "kto", "co", "czy", "jak", "gdzie", "kiedy", "dlaczego", "czemu", "po co"]
+        # Oczyszczenie fałszywych definicji ze stopwordów i słów pytających
         defs = self.data["servers"][g_id].get("definitions", {})
-        for bk in bad_keys:
-            if bk in defs:
-                del defs[bk]
+        keys_to_del = [k for k in list(defs.keys()) if k.lower() in POLISH_STOPWORDS or defs[k].lower() in POLISH_STOPWORDS or len(k) < 3]
+        for k in keys_to_del:
+            del defs[k]
 
         self.data["servers"][g_id]["last_active"] = datetime.utcnow().isoformat()
         return self.data["servers"][g_id]
@@ -475,22 +485,36 @@ class MemoryVault:
             parsed_fact = re.sub(r"\s*(?:,?\s*)?(?:zakoduj|zakodować|zakodowac|zapamiętaj|zapamietaj)\s*$", "", content, flags=re.IGNORECASE).strip()
 
         # 4b. SPECJALNA DETEKCJA RELACJI I KSYWEK (np. "Zapamietaj ze nazwyac masz Jagode MAMUSIĄ!", "Jagoda to Mamusia")
-        # Sprawdzamy zarówno parsed_fact, jak i cały content
+        POLISH_STOPWORDS = {
+            'to', 'jest', 'było', 'bylo', 'będzie', 'bedzie', 'nie', 'tak', 'mam', 'masz', 'ma',
+            'dla', 'ze', 'że', 'co', 'kto', 'ile', 'jak', 'gdzie', 'kiedy', 'po', 'za', 'od',
+            'do', 'na', 'w', 'z', 'o', 'u', 'i', 'a', 'ale', 'lub', 'albo', 'czy', 'by', 'bo',
+            'tylko', 'zanim', 'juz', 'już', 'znowu', 'odpisze', 'minie', 'wieczność', 'wiecznosc',
+            'tam', 'tu', 'sie', 'się', 'mnie', 'ciebie', 'cie', 'cię', 'go', 'jej', 'nas', 'was',
+            'ich', 'on', 'ona', 'oni', 'ono', 'ten', 'ta', 'te', 'tego', 'tej', 'temu', 'tym',
+            'ktoś', 'ktos', 'coś', 'cos', 'nic', 'wszystko', 'zawsze', 'nigdy', 'teraz', 'potem',
+            'zaraz', 'chyba', 'może', 'moze', 'dobra', 'dobrze', 'źle', 'zle', 'kurwa', 'chuj', 'ja', 'bus'
+        }
+
         check_texts = [t for t in [parsed_fact, content] if t]
         is_question = any(re.search(r"\b" + re.escape(q) + r"\b", c_low) for q in ["kto", "co", "czy", "jak", "gdzie", "kiedy", "dlaczego", "czemu", "jaka", "jaki", "jakie", "który", "ktory", "która", "ktora"])
-        
+        is_compound = any(re.search(r"\b" + re.escape(conj) + r"\b", c_low) for conj in ["bo", "zanim", "minie", "kiedy", "gdy", "dlatego", "więc", "przecież", "ale", "chyba"])
+
         for ct in check_texts:
             m1 = re.search(r'(?:nazywać|nazywac|nazwyac|mówić\s+na|mowic\s+na|mów\s+na|mow\s+na|wołaj\s+na|wolaj\s+na)\s+(?:masz\s+)?([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_]+)\s+(?:jako\s+|per\s+)?([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_!]+)', ct, re.IGNORECASE)
             m2 = re.search(r'masz\s+(?:nazywać|nazywac|nazwyac|mówić\s+na|mowic\s+na)\s+([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_]+)\s+(?:jako\s+|per\s+)?([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_!]+)', ct, re.IGNORECASE)
-            m3 = re.search(r'([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_]+)\s+to\s+([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_!]+)', ct, re.IGNORECASE) if (" to " in ct.lower() and not is_question and "?" not in ct) else None
+            # Ścisłe dopasowanie "X to Y" - tylko całe zdanie lub po komendzie 'zakoduj', NIGDY w zdaniach złożonych!
+            m3 = re.match(r'^\s*([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_]{3,20})\s+to\s+([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_!]{3,25})\s*[.!]?$', ct, re.IGNORECASE) if (not is_question and not is_compound and "?" not in ct) else None
             m_nick = m1 or m2 or m3
 
             if m_nick:
                 p_raw = m_nick.group(1).strip().rstrip("!.,")
                 r_raw = m_nick.group(2).strip().rstrip("!.,")
                 
-                # Odrzuć jeśli któreś ze słów jest pytaniem lub zaimkiem
-                if any(w in [p_raw.lower(), r_raw.lower()] for w in ["kto", "co", "czy", "jak", "gdzie", "kiedy", "bus", "nie", "tak"]):
+                # Odrzuć jeśli którekolwiek ze słów jest stopwordem, zaimkiem lub spójnikiem
+                if p_raw.lower() in POLISH_STOPWORDS or r_raw.lower() in POLISH_STOPWORDS:
+                    continue
+                if len(p_raw) < 3 or len(r_raw) < 3:
                     continue
 
                 p_norm = "Jagoda" if any(k in p_raw.lower() for k in ["jagod", "janow"]) else p_raw.capitalize()
@@ -537,42 +561,6 @@ class MemoryVault:
             if explicit_encode:
                 return f"Zakodowałem: \"{parsed_fact}\" 🧠"
             return None
-
-        # 5. Ciche kodowanie definicji, relacji i faktów w tle (BEZ mówienia i pisania że zakodowano!)
-        if " to " in c_low and "?" not in content and len(content.split()) <= 6 and not is_question:
-            parts = re.split(r"\s+to\s+", content, maxsplit=1, flags=re.IGNORECASE)
-            if len(parts) == 2 and 2 <= len(parts[0].strip()) <= 25 and 2 <= len(parts[1].strip()) <= 60:
-                term = parts[0].strip().rstrip("!.,")
-                val = parts[1].strip().rstrip("!.,")
-                if term.lower() not in ["kto", "co", "czy", "jak", "gdzie", "kiedy", "nie", "tak"] and val.lower() not in ["kto", "co", "czy"]:
-                    if self._is_safe_fact(term) and self._is_safe_fact(val):
-                        t_low = term.lower()
-                        v_low = val.lower()
-                        server_store["definitions"][t_low] = val
-                        server_store["definitions"][v_low] = term
-                        if "mamus" in t_low:
-                            server_store["definitions"]["mamusia"] = val
-                            server_store["definitions"]["mamusią"] = val
-                        if "mamus" in v_low:
-                            server_store["definitions"]["mamusia"] = term
-                            server_store["definitions"]["mamusią"] = term
-
-                        # Aktualizacja profilu Jagody / użytkowników
-                        for person_name, role_name in [(term, val), (val, term)]:
-                            if any(k in person_name.lower() for k in ["jagod", "janow"]):
-                                u_key = "jagoda"
-                                if u_key in server_store["users"]:
-                                    if role_name not in server_store["users"][u_key].get("roles", []):
-                                        server_store["users"][u_key]["roles"].append(role_name)
-
-                        server_store["facts"].append({
-                            "id": len(server_store["facts"]) + 1,
-                            "content": f"{term} to {val}",
-                            "added_by": f"{author_clean} ({source})",
-                            "timestamp": now_iso
-                        })
-                        self._save_vault()
-                        self.sync_to_github()
 
         # 6. Ciche kodowanie informacji o sobie w tle ("jestem...", "nazywam się...")
         if c_low.startswith("jestem ") or c_low.startswith("nazywam się ") or c_low.startswith("mów mi "):
@@ -635,12 +623,36 @@ class MemoryVault:
             lines.append("Wszystko mam bezpiecznie zaszyfrowane i zabezpieczone na GitHubie! 🛡️")
             return "\n".join(lines)
 
+        # Sprawdzenie relacji personalnych (np. "Kim jestem dla Olka?", "Kim Jagoda jest dla mnie?", "Kim Jagoda jest dla Olka?")
+        is_rel_query = any(w in q_clean.split() for w in ["kim", "kto"]) and ("dla" in q_clean.split())
+        if is_rel_query:
+            # 1. Jagoda pyta: kim jestem dla Olka / Szatka
+            if any(k in author_name.lower() for k in ["jagod", "janow"]):
+                if any(k in q_clean for k in ["olka", "olkiem", "szatka", "szatkiem", "szatek_olo", "prezesa"]):
+                    return "Dla Olka (Szatka) jesteś naszą serwerową Mamusią (jak sam ustalił!), zaufaną testerką bota i super kumpelą z ekipy ZSC! 🌸"
+                if any(w in q_clean.split() for w in ["ciebie", "cię", "cie"]):
+                    return "Dla mnie jesteś naszą niezastąpioną Mamusią serwera, testerką bota i super kumpelą! 🌸"
+
+            # 2. Szatek pyta: kim Jagoda jest dla mnie
+            if any(k in author_name.lower() for k in ["szatek", "olo", "olek"]):
+                if any(k in q_clean for k in ["jagoda", "jagodę", "jagody", "janow", "janowka", "j_janow3kq"]):
+                    return "Jagoda to Twoja zaufana testerka bota, super kumpela z ekipy ZSC i nasza serwerowa Mamusia – sam tak zarządziłeś! 🌸"
+                if any(w in q_clean.split() for w in ["ciebie", "cię", "cie"]):
+                    return "Dla mnie jesteś moim stwórcą, Prezesem ZSC i najlepszym szefem! 👑"
+
+            # 3. Ktoś pyta ogólnie: kim Jagoda jest dla Olka / Szatka
+            if any(k in q_clean for k in ["jagoda", "jagodę", "jagody", "janow", "janowka", "j_janow3kq"]):
+                if any(k in q_clean for k in ["olka", "olkiem", "szatka", "szatkiem", "szatek_olo", "prezesa"]):
+                    return "Jagoda jest dla Olka (Szatka) zaufaną testerką bota, przyjaciółką z ekipy ZSC i naszą serwerową Mamusią! 🌸"
+
         # Sprawdzenie wyuczonych definicji i relacji (np. "Kto to Mamusia?", "Kto jest Mamusią?")
         defs = server_store.get("definitions", {})
         for def_term, def_val in defs.items():
             dt_clean = def_term.lower().strip()
-            if len(dt_clean) >= 3 and (dt_clean in q_clean or q_clean.endswith(dt_clean)):
-                if any(w in q_clean for w in ["kto", "kim", "co", "czym", "kogo"]):
+            if dt_clean in POLISH_STOPWORDS or len(dt_clean) < 3:
+                continue
+            if re.search(r"\b" + re.escape(dt_clean) + r"\b", q_clean):
+                if any(w in q_clean.split() for w in ["kto", "kim", "co", "czym", "kogo"]):
                     return f"**{def_term.capitalize()}** to na naszym serwerze oczywiście **{def_val}**! Pamiętam to doskonale z ustaleń! 🌸"
 
         # Pytanie: "Wiesz kto to Jagoda?" / "Kim jest Jagoda?"

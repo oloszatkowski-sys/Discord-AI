@@ -136,6 +136,38 @@ def is_leave_command(text: str) -> bool:
     return False
 
 
+def resolve_discord_mentions(message: discord.Message) -> str:
+    """
+    Zamienia identyfikatory Discorda (<@ID>, <#ID>, <@&ID>) na czytelne nazwy użytkowników, ról i kanałów.
+    Wzmianki o samym bocie są usuwane, by nie zaśmiecać zapytania.
+    """
+    text = message.content or ""
+    bot_id = str(message.guild.me.id) if message.guild and message.guild.me else None
+
+    # 1. Usuń wzmianki o bocie
+    if bot_id:
+        text = re.sub(rf"<@!?{bot_id}>", "", text)
+
+    # 2. Zamień wzmianki o innych użytkownikach na ich nazwę / nick
+    for user in getattr(message, "mentions", []):
+        if bot_id and str(user.id) == bot_id:
+            continue
+        uname = getattr(user, "display_name", None) or getattr(user, "name", "Użytkownik")
+        text = re.sub(rf"<@!?{user.id}>", f" {uname} ", text)
+
+    # 3. Zamień wzmianki o rolach
+    for role in getattr(message, "role_mentions", []):
+        text = re.sub(rf"<@&{role.id}>", f" {role.name} ", text)
+
+    # 4. Zamień wzmianki o kanałach
+    for channel in getattr(message, "channel_mentions", []):
+        text = re.sub(rf"<#{channel.id}>", f" #{channel.name} ", text)
+
+    # 5. Oczyść ewentualne pozostałe nieznane tagi numeryczne
+    text = re.sub(r"<@!?\d+>", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def should_bot_speak_on_voice(text: str, author_name: str) -> bool:
     """
     Bramka głosu (Voice Gatekeeper): decyduje czy bot ma zabrać głos,
@@ -636,13 +668,21 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             return
 
         async with message.channel.typing():
-            clean_query = re.sub(r"<@!?\d+>|<@&\d+>", "", content).strip()
+            clean_query = resolve_discord_mentions(message)
             if not clean_query:
                 clean_query = "Co tam słychać na serwerze?"
 
             server_store = memory_vault._get_server_store(guild_id, guild_name)
             global_lore = memory_vault.data.get("global_lore", {})
             history = conv_tracker.get_history(message.channel.id)
+
+            # 1. Sprawdź bezpośrednią wiedzę ze Skarbca Pamięci (find_knowledge) - ZERO halucynacji o osobach i relacjach!
+            know_res = memory_vault.find_knowledge(clean_query, author_name, guild_id, guild_name)
+            if know_res:
+                conv_tracker.add_message(message.channel.id, "Aether AI", know_res, is_bot=True)
+                await message.reply(know_res, mention_author=False)
+                await speak_on_vc(message, know_res)
+                return
 
             # POLSKI CHATGPT WSZĘDZIE: Analizuje wszystkie wiadomości, 4 przykłady i generuje odpowiedź adekwatną do sytuacji!
             reply = await ai_brain.generate_response(

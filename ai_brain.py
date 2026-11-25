@@ -22,6 +22,7 @@ try:
 except ImportError:
     httpx = None
 from typing import List, Dict, Any, Optional, Tuple
+from memory_vault import POLISH_STOPWORDS
 
 SYSTEM_BASE_PROMPT = """Jesteś Aether AI – zaawansowanym, błyskawicznym Polskim ChatGPT działającym na Discordzie dla ekipy ZSC (Zjednoczone Siły Creative, jednostka SZAT).
 Rozmawiasz na czacie tekstowym oraz na żywo na kanale głosowym.
@@ -591,11 +592,32 @@ class AIBrain:
                 return f"Jasne, kontynuuję! Ostatnio na kanale mówiliśmy o: {', '.join(recent_samples)}. O czym z tego pogadamy dalej?"
             return f"Jasne {author_name}, słucham Cię uważnie! Rozwiń myśl, jestem z Wami!"
 
+        # 8b. Relacje między osobami (np. "kim jestem dla Olka", "kim Jagoda jest dla mnie")
+        is_rel_query = any(w in msg_clean.split() for w in ["kim", "kto"]) and ("dla" in msg_clean.split())
+        if is_rel_query:
+            if any(k in author_name.lower() for k in ["jagod", "janow"]):
+                if any(k in msg_clean for k in ["olka", "olkiem", "szatka", "szatkiem", "szatek_olo", "prezesa"]):
+                    return "Dla Olka (Szatka) jesteś naszą serwerową Mamusią (jak sam ustalił!), zaufaną testerką bota i super kumpelą z ekipy ZSC! 🌸"
+                if any(w in msg_clean.split() for w in ["ciebie", "cię", "cie"]):
+                    return "Dla mnie jesteś naszą niezastąpioną Mamusią serwera, testerką bota i super kumpelą! 🌸"
+
+            if any(k in author_name.lower() for k in ["szatek", "olo", "olek"]):
+                if any(k in msg_clean for k in ["jagoda", "jagodę", "jagody", "janow", "janowka", "j_janow3kq"]):
+                    return "Jagoda to Twoja zaufana testerka bota, super kumpela z ekipy ZSC i nasza serwerowa Mamusia – sam tak zarządziłeś! 🌸"
+                if any(w in msg_clean.split() for w in ["ciebie", "cię", "cie"]):
+                    return "Dla mnie jesteś moim stwórcą, Prezesem ZSC i najlepszym szefem! 👑"
+
+            if any(k in msg_clean for k in ["jagoda", "jagodę", "jagody", "janow", "janowka", "j_janow3kq"]):
+                if any(k in msg_clean for k in ["olka", "olkiem", "szatka", "szatkiem", "szatek_olo", "prezesa"]):
+                    return "Jagoda jest dla Olka (Szatka) zaufaną testerką bota, przyjaciółką z ekipy ZSC i naszą serwerową Mamusią! 🌸"
+
         # 9. Sprawdzenie pytań o definicje i role (np. "kto to mamusia?", "kto jest mamusią?", "kim jest mamusia?")
         for def_term, def_val in defs.items():
             dt_clean = def_term.lower().strip()
-            if len(dt_clean) >= 3 and (dt_clean in msg_clean or msg_clean.endswith(dt_clean)):
-                if any(w in msg_clean for w in ["kto", "kim", "co", "kogo"]):
+            if dt_clean in POLISH_STOPWORDS or len(dt_clean) < 3:
+                continue
+            if re.search(r"\b" + re.escape(dt_clean) + r"\b", msg_clean):
+                if any(w in msg_clean.split() for w in ["kto", "kim", "co", "kogo"]):
                     return f"**{def_term.capitalize()}** to na naszym serwerze oczywiście **{def_val}**! Pamiętam to z naszych ustaleń. 🌸"
 
         # 10. Pytania o konkretne osoby (TYLKO jeśli ktoś pyta o to kim są, a nie przy luźnym wspomnieniu)
