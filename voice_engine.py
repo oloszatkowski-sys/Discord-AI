@@ -19,7 +19,7 @@ import wave
 import uuid
 import struct
 import asyncio
-from typing import Optional, Dict, Any, Callable, Awaitable
+from typing import Optional, Dict, Any, Callable, Awaitable, Tuple
 import discord
 import edge_tts
 
@@ -330,65 +330,86 @@ class DiscordVoiceEngine:
 
     async def play_music_preview(self, song_query: str, duration_sec: Optional[int] = None) -> bool:
         """
-        Pobiera strumień utworu z YouTube (yt-dlp) i odtwarza go bezpośrednio na kanale głosowym
-        (w całości lub przez zadany czas testowy, np. 10 sekund, żeby sprawdzić czy to ta piosenka!).
+        Dodaje utwór muzyczny do głównej kolejki audio (odtwarzany zaraz po zapowiedzi głosowej TTS!),
+        pobierając go z SoundCloud / Deezer CDN / iTunes CDN / YouTube.
         """
-        if not HAS_YTDLP or not self.is_connected():
+        if not self.is_connected():
             return False
 
+        await self.speech_queue.put({
+            "type": "MUSIC",
+            "query": song_query,
+            "duration_sec": duration_sec
+        })
+        print(f"[VOICE_MUSIC] 📥 Dodano utwór do kolejki odtwarzania: '{song_query}' (czas: {duration_sec or 'całość'}s)")
+        return True
+
+    def _resolve_music_stream_sync(self, song_query: str) -> Optional[Tuple[str, str]]:
+        """
+        Wyszukuje bezpośredni strumień audio (100% odporne na blokady IP GitHub Actions):
+        1. SoundCloud (scsearch1 przez yt-dlp - pełne utwory bez blokad botów)
+        2. Deezer Public API (błyskawiczny MP3 z CDN)
+        3. iTunes Search API (błyskawiczny M4A z CDN Apple)
+        4. YouTube (ytsearch1 fallback)
+        """
+        import urllib.request
+        import urllib.parse
+        import json
+
+        # 1. Próba Deezer Public API (0.15s, krystaliczny MP3 CDN)
         try:
-            def _extract_stream_url() -> Optional[Tuple[str, str]]:
-                ydl_opts = {
-                    "format": "bestaudio/best",
-                    "noplaylist": True,
-                    "quiet": True,
-                    "default_search": "ytsearch1"
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(f"ytsearch1:{song_query}", download=False)
-                    if "entries" in info and info["entries"]:
-                        entry = info["entries"][0]
-                    else:
-                        entry = info
-                    return entry.get("url"), entry.get("title", song_query)
-
-            loop = asyncio.get_running_loop()
-            stream_info = await loop.run_in_executor(None, _extract_stream_url)
-            if not stream_info or not stream_info[0]:
-                return False
-
-            stream_url, track_title = stream_info
-            print(f"[VOICE_MUSIC] 🎵 Odtwarzanie utworu: '{track_title}' (limit czasu: {duration_sec or 'całość'}s)")
-
-            # Poczekaj aż zakończy się bieżąca zapowiedź głosowa TTS
-            wait_tts = 0.0
-            while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing() and wait_tts < 15.0:
-                await asyncio.sleep(0.2)
-                wait_tts += 0.2
-
-            before_opts = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-            options = f"-vn -af volume=0.75 -t {int(duration_sec)}" if duration_sec else "-vn -af volume=0.75"
-
-            self._is_playing_music = True
-            source = discord.FFmpegPCMAudio(stream_url, before_options=before_opts, options=options)
-            self.voice_client.play(source)
-
-            if duration_sec:
-                asyncio.create_task(self._handle_preview_timer(track_title, duration_sec))
-            return True
-        except Exception as e:
-            print(f"[VOICE_MUSIC] Błąd odtwarzania muzyki ({song_query}): {e}")
-            self._is_playing_music = False
-            return False
-
-    async def _handle_preview_timer(self, track_title: str, duration_sec: int):
-        """Odlicza czas testowego odtwarzania (np. 10 sekund), zatrzymuje muzykę i pyta czy to ten utwór."""
-        await asyncio.sleep(duration_sec + 0.5)
-        if self._is_playing_music:
-            self.stop_audio()
-            await self.enqueue_speech(
-                f"Minęło {duration_sec} sekund testu utworu {track_title}! I jak, to jest ta piosenka, o którą Ci chodziło?"
+            q_enc = urllib.parse.quote(song_query)
+            req = urllib.request.Request(
+                f"https://api.deezer.com/search?q={q_enc}&limit=1",
+                headers={"User-Agent": "Mozilla/5.0"}
             )
+            with urllib.request.urlopen(req, timeout=5) as r:
+                data = json.loads(r.read().decode())
+                if data.get("data"):
+                    item = data["data"][0]
+                    preview_url = item.get("preview")
+                    title = f"{item.get('title', song_query)} - {item.get('artist', {}).get('name', '')}".strip(" -")
+                    if preview_url:
+                        return preview_url, title
+        except Exception as e:
+            print(f"[VOICE_MUSIC] Deezer fallback info: {e}")
+
+        # 2. Próba iTunes Search API (0.15s, M4A CDN)
+        try:
+            q_enc = urllib.parse.quote(song_query)
+            req = urllib.request.Request(
+                f"https://itunes.apple.com/search?term={q_enc}&media=music&limit=1",
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            with urllib.request.urlopen(req, timeout=5) as r:
+                data = json.loads(r.read().decode())
+                if data.get("results"):
+                    item = data["results"][0]
+                    preview_url = item.get("previewUrl")
+                    title = f"{item.get('trackName', song_query)} - {item.get('artistName', '')}".strip(" -")
+                    if preview_url:
+                        return preview_url, title
+        except Exception as e:
+            print(f"[VOICE_MUSIC] iTunes fallback info: {e}")
+
+        # 3. Próba SoundCloud oraz YouTube przez yt-dlp
+        if HAS_YTDLP:
+            for prefix in ["scsearch1", "ytsearch1"]:
+                try:
+                    ydl_opts = {
+                        "format": "bestaudio/best",
+                        "noplaylist": True,
+                        "quiet": True
+                    }
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(f"{prefix}:{song_query}", download=False)
+                        entry = info["entries"][0] if ("entries" in info and info["entries"]) else info
+                        if entry and entry.get("url"):
+                            return entry["url"], entry.get("title", song_query)
+                except Exception:
+                    pass
+
+        return None
 
     async def enqueue_speech(self, text: str):
         """Dodaje oczyszczony tekst do kolejki syntezy mowy."""
@@ -396,7 +417,7 @@ class DiscordVoiceEngine:
         if not clean_speech or len(clean_speech) < 2:
             return
 
-        if self.speech_queue.qsize() > 8:
+        if self.speech_queue.qsize() > 10:
             try:
                 self.speech_queue.get_nowait()
                 self.speech_queue.task_done()
@@ -407,9 +428,9 @@ class DiscordVoiceEngine:
         await self.speech_queue.put(clean_speech)
 
     async def _process_queue(self):
-        """Pobiera teksty z kolejki, konwertuje do WAV 48kHz stereo i odtwarza ciepłym głosem Zofii."""
+        """Pobiera elementy z kolejki (mowę TTS lub utwory muzyczne), konwertuje do WAV 48kHz stereo i odtwarza po kolei."""
         while True:
-            text = await self.speech_queue.get()
+            item = await self.speech_queue.get()
             mp3_path = None
             wav_path = None
             try:
@@ -421,20 +442,68 @@ class DiscordVoiceEngine:
                 if not self.is_connected():
                     continue
 
-                # Jeśli gra tylko mowa TTS (nie muzyka), poczekaj aż skończy mówić poprzednie zdanie
+                # Poczekaj na zakończenie poprzedniego dźwięku
                 wait_prev = 0.0
-                while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing() and not self._is_playing_music and wait_prev < 35.0:
+                while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing() and wait_prev < 45.0:
                     await asyncio.sleep(0.15)
                     wait_prev += 0.15
 
-                # Jeśli grała muzyka, a bot ma powiedzieć krótką odpowiedź, zatrzymaj muzykę na czas wypowiedzi
-                if self._is_playing_music and self.voice_client and self.voice_client.is_playing():
-                    self.stop_audio()
-                    await asyncio.sleep(0.2)
-
                 uid = uuid.uuid4().hex[:8]
-                mp3_path = os.path.join(TEMP_AUDIO_DIR, f"tts_{uid}.mp3")
                 wav_path = os.path.join(TEMP_AUDIO_DIR, f"clean_{uid}.wav")
+
+                # A. ODTWARZANIE UTWORU MUZYCZNEGO LUB TESTU X SEKUND
+                if isinstance(item, dict) and item.get("type") == "MUSIC":
+                    song_query = item.get("query", "")
+                    duration_sec = item.get("duration_sec")
+                    loop = asyncio.get_running_loop()
+                    stream_info = await loop.run_in_executor(None, self._resolve_music_stream_sync, song_query)
+                    if not stream_info or not stream_info[0]:
+                        print(f"[VOICE_MUSIC] ❌ Nie znaleziono strumienia dla: '{song_query}'")
+                        continue
+
+                    stream_url, track_title = stream_info
+                    play_dur = int(duration_sec) if duration_sec else 30
+                    print(f"[VOICE_MUSIC] 🎵 Konwersja i odtwarzanie na VC: '{track_title}' ({play_dur}s)")
+
+                    convert_cmd = [
+                        "ffmpeg", "-y",
+                        "-i", stream_url,
+                        "-vn",
+                        "-t", str(play_dur),
+                        "-ar", "48000",
+                        "-ac", "2",
+                        "-c:a", "pcm_s16le",
+                        "-af", "volume=0.82",
+                        wav_path
+                    ]
+                    proc = await asyncio.create_subprocess_exec(
+                        *convert_cmd,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL
+                    )
+                    await proc.communicate()
+
+                    if os.path.exists(wav_path) and self.voice_client and self.voice_client.is_connected():
+                        self._is_playing_music = True
+                        source = discord.FFmpegPCMAudio(wav_path)
+                        self.voice_client.play(source)
+                        await asyncio.sleep(0.2)
+                        elapsed = 0.0
+                        while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing() and elapsed < (play_dur + 5.0):
+                            await asyncio.sleep(0.2)
+                            elapsed += 0.2
+                        self._is_playing_music = False
+                        print(f"[VOICE_MUSIC] ✅ Zakończono odtwarzanie utworu '{track_title}' ({elapsed:.1f}s).")
+
+                        if duration_sec:
+                            await self.enqueue_speech(
+                                f"Minęło {duration_sec} sekund testu utworu {track_title}! I jak, to jest ta piosenka, o którą Ci chodziło?"
+                            )
+                    continue
+
+                # B. ODTWARZANIE MOWY TTS (Ciepły głos Zofii)
+                text = str(item)
+                mp3_path = os.path.join(TEMP_AUDIO_DIR, f"tts_{uid}.mp3")
 
                 communicate = edge_tts.Communicate(text, self.voice_name, rate="+2%", pitch="+0Hz")
                 await communicate.save(mp3_path)
@@ -464,7 +533,7 @@ class DiscordVoiceEngine:
 
                     await asyncio.sleep(0.2)
                     elapsed = 0.0
-                    while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing() and not self._is_playing_music and elapsed < 40.0:
+                    while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing() and elapsed < 40.0:
                         await asyncio.sleep(0.15)
                         elapsed += 0.15
                     print(f"[VOICE_ENGINE] ✅ Zakończono mówienie ({elapsed:.1f}s).")

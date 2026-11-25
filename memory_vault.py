@@ -443,11 +443,12 @@ class MemoryVault:
                 if trig and resp:
                     return self.add_rule(trig, resp, author_clean, guild_id, guild_name)
 
-        # 4. Jawne zapamiętywanie faktów ("zapamiętaj, że...", "pamiętaj: ...", "... zakoduj")
+        # 4. Jawne zakodowanie faktów (potwierdzaj głośno TYLKO gdy użytkownik sam powie "zakoduj" / "zakodować")
+        explicit_encode = any(w in c_low for w in ["zakoduj", "zakodować", "zakodowac"])
         trigger_prefixes = [
+            "zakoduj:", "zakoduj że", "zakoduj ze", "zakoduj",
             "zapamiętaj, że", "zapamietaj, ze", "zapamiętaj że", "zapamietaj ze",
-            "zapamiętaj:", "zapamietaj:", "pamiętaj:", "pamietaj:", "zapisz:", "naucz się:",
-            "zakoduj:", "zakoduj że", "zakoduj ze", "zakoduj"
+            "zapamiętaj:", "zapamietaj:", "pamiętaj:", "pamietaj:", "zapisz:", "naucz się:"
         ]
         for prefix in trigger_prefixes:
             if c_low.startswith(prefix):
@@ -456,7 +457,7 @@ class MemoryVault:
                     return None
 
                 if not self._is_safe_fact(fact_text):
-                    return "Zablokowano: Próba zapamiętania wrażliwych danych (Tarcza Anti-Leak) 🛡️"
+                    return None
 
                 new_id = len(server_store["facts"]) + 1
                 server_store["facts"].append({
@@ -467,7 +468,9 @@ class MemoryVault:
                 })
                 self._save_vault()
                 self.sync_to_github()
-                return f"Zakodowałem w pamięci Polskiego ChatGPT: \"{fact_text}\" 🧠"
+                if explicit_encode:
+                    return f"Zakodowałem: \"{fact_text}\" 🧠"
+                return None
 
         if any(c_low.endswith(suf) for suf in ["zakoduj", "zakodować", "zakodowac", "zapamiętaj", "zapamietaj"]):
             fact_text = re.sub(r"\s*(?:,?\s*)?(?:zakoduj|zakodować|zakodowac|zapamiętaj|zapamietaj)\s*$", "", content, flags=re.IGNORECASE).strip()
@@ -481,24 +484,13 @@ class MemoryVault:
                 })
                 self._save_vault()
                 self.sync_to_github()
-                return f"Zakodowałem w pamięci Polskiego ChatGPT: \"{fact_text}\" 🧠"
+                if explicit_encode:
+                    return f"Zakodowałem: \"{fact_text}\" 🧠"
+                return None
 
-        # 5. Definicje i relacje ("X to jest Y", "X oznacza Y", oraz proste deklaracje "Oliwier to Basista")
-        if " to jest " in c_low or " oznacza " in c_low:
-            split_word = " to jest " if " to jest " in c_low else " oznacza "
-            parts = content.split(split_word, 1)
-            if len(parts) == 2 and 2 < len(parts[0].strip()) < 35 and 2 < len(parts[1].strip()) < 200:
-                term = parts[0].strip()
-                definition = parts[1].strip()
-                if "?" not in content and not any(term.lower().startswith(q) for q in ["kto", "co", "czy", "jak", "gdzie"]) and self._is_safe_fact(term) and self._is_safe_fact(definition):
-                    server_store["definitions"][term] = definition
-                    self._save_vault()
-                    self.sync_to_github()
-                    return f"Zapisałem w Polskim ChatGPT definicję \"{term}\": {definition} 📖"
-
-        # Wykrywanie zwięzłych twierdzeń "X to Y" (np. "Oliwier to Basista") bez znaku zapytania
+        # 5. Ciche kodowanie definicji, relacji i faktów w tle (BEZ mówienia i pisania że zakodowano!)
         if " to " in c_low and "?" not in content and len(content.split()) <= 6:
-            if not any(c_low.startswith(q) for q in ["kto ", "co ", "czy ", "jak ", "gdzie ", "kiedy ", "jaka ", "jaki ", "a kto", "a co"]):
+            if not any(c_low.startswith(q) for q in ["kto ", "co ", "czy ", "jak ", "gdzie ", "kiedy ", "jaka ", "jaki ", "a kto", "a co", "nie "]):
                 parts = re.split(r"\s+to\s+", content, maxsplit=1, flags=re.IGNORECASE)
                 if len(parts) == 2 and 2 <= len(parts[0].strip()) <= 25 and 2 <= len(parts[1].strip()) <= 60:
                     term, val = parts[0].strip(), parts[1].strip()
@@ -511,9 +503,8 @@ class MemoryVault:
                             "timestamp": now_iso
                         })
                         self._save_vault()
-                        self.sync_to_github()
 
-        # 6. Informacje o sobie ("jestem...", "nazywam się...")
+        # 6. Ciche kodowanie informacji o sobie w tle ("jestem...", "nazywam się...")
         if c_low.startswith("jestem ") or c_low.startswith("nazywam się ") or c_low.startswith("mów mi "):
             fact_about_self = content
             if self._is_safe_fact(fact_about_self):
@@ -523,8 +514,6 @@ class MemoryVault:
                     if len(user_prof["facts"]) > 10:
                         user_prof["facts"].pop(0)
                     self._save_vault()
-                    self.sync_to_github()
-                    return f"Zapisałem fakt o Tobie ({author_clean}) w Polskim ChatGPT: {fact_about_self} 💡"
 
         self._save_vault()
         return None

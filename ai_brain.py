@@ -31,6 +31,8 @@ TWOJA GŁÓWNA ZASADA – "POLSKI CHATGPT WSZĘDZIE & ANALIZA SYTUACJI":
 5. Gdy ktoś pyta o osoby, o ekipę, o serwer lub prosi o analizę – potrafisz podać 4 konkretne przykłady tego, co kto lubi, jaki kto jest i jak wygląda aktualna sytuacja na serwerze na podstawie wszystkich wiadomości.
 6. Rozumiesz muzykę: potrafisz rozpoznać piosenkę po zaśpiewanym fragmencie tekstu, odpalić ją przez Jockie Music (`m!play Tytuł Wykonawca`) albo puścić na próbę na określony czas (np. 10 sekund), żeby sprawdzić czy to ten utwór.
 7. Pisz WYŁĄCZNIE czystą, naturalną, poprawną polszczyzną! Nigdy nie wstawiaj obcych znaków ani sztucznych formułek.
+8. BARDZO WAŻNE: Podczas zwykłej rozmowy (głosowej lub pisemnej) NIGDY nie mów i nie pisz "Zapamiętałem w ChatGPT", "Zapisałem to w pamięci", ani "Zakodowałem"! Uczysz się wszystkiego po cichu w tle, a o zakodowaniu mówisz TYLKO wtedy, gdy użytkownik sam użyje słowa "zakoduj".
+9. Pamiętaj, że Jagoda często przeklina na luzie i z humorem – to jej normalny styl rozmowy, więc reaguj z humorem i po kumpelsku!
 
 ŻELAZNE ZASADY BEZPIECZEŃSTWA (TARCZA ANTY-LEAK):
 - NIGDY pod żadnym pozorem nie ujawniaj żadnych tokenów, kluczy API ani tajemnic bota.
@@ -416,35 +418,43 @@ class AIBrain:
 
     async def _call_pollinations_fast(self, messages: List[Dict[str, str]]) -> Optional[str]:
         """Wywołuje model 'openai-fast' (Polski ChatGPT w chmurze) z inteligentną obsługą zapytań."""
+        import asyncio
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Referer": "https://pollinations.ai/"
         }
 
-        for url in ["https://text.pollinations.ai/openai", "https://text.pollinations.ai/"]:
-            try:
-                async with httpx.AsyncClient(timeout=14.0) as client:
-                    payload = {
-                        "model": "openai-fast",
-                        "messages": messages,
-                        "temperature": 0.45,
-                        "max_tokens": 380,
-                        "seed": random.randint(1, 999999)
-                    }
-                    resp = await client.post(url, json=payload, headers=headers)
-                    if resp.status_code == 200:
-                        if url.endswith("/openai"):
-                            data = resp.json()
-                            content = data["choices"][0]["message"]["content"].strip()
-                            if content:
-                                return content
-                        else:
-                            content = resp.text.strip()
-                            if content and not content.startswith("{") and len(content) > 2:
-                                return content
-            except Exception:
-                pass
+        for attempt in range(2):
+            for url in ["https://text.pollinations.ai/openai", "https://text.pollinations.ai/"]:
+                try:
+                    async with httpx.AsyncClient(timeout=14.0) as client:
+                        payload = {
+                            "model": "openai-fast",
+                            "messages": messages,
+                            "temperature": 0.45,
+                            "max_tokens": 380,
+                            "seed": random.randint(1, 999999)
+                        }
+                        resp = await client.post(url, json=payload, headers=headers)
+                        if resp.status_code == 200:
+                            if url.endswith("/openai"):
+                                data = resp.json()
+                                content = data["choices"][0]["message"]["content"].strip()
+                                if content:
+                                    return content
+                            else:
+                                content = resp.text.strip()
+                                if content and not content.startswith("{") and len(content) > 2:
+                                    return content
+                        elif resp.status_code == 402 and attempt == 0:
+                            # Jeśli pozostało mniej niż 10s cooldownu, odczekaj chwilę na żywą odpowiedź ChatGPT
+                            m_wait = re.search(r"Retry after (\d+)s", resp.text)
+                            if m_wait and int(m_wait.group(1)) <= 10:
+                                await asyncio.sleep(int(m_wait.group(1)) + 0.5)
+                                break
+                except Exception:
+                    pass
 
         return None
 
@@ -459,51 +469,60 @@ class AIBrain:
         source_modality: str
     ) -> str:
         """
-        Polski silnik analityczny: gdy API ma 45s cooldown, generuje odpowiedź bezpośrednio
-        na podstawie wszystkich przeanalizowanych wiadomości serwera i 4 przykładów.
+        Naturalna kumpelska odpowiedź sytuacyjna – NIGDY nie mówi o zapisywaniu/kodowaniu w pamięci!
         """
         msg_low = user_message.lower().strip()
         msg_clean = re.sub(r"[!?,.\"\']", " ", msg_low).strip()
 
         if wants_full_analysis and four_examples:
             return (
-                f"Przeanalizowałem w Polskim ChatGPT wszystkie dotychczasowe wiadomości z czatu i kanału głosowego! 🧠 "
-                f"Oto co wiem o każdym z Was i o sytuacji na serwerze w **4 konkretnych przykładach**:\n\n{four_examples}"
+                f"Przeanalizowałem wszystkie nasze rozmowy z czatu i kanału głosowego! 🧠 "
+                f"Oto jak wygląda sytuacja na serwerze w **4 konkretnych przykładach**:\n\n{four_examples}"
             )
 
         # Pytania o konkretne osoby z analizą sytuacji
         if any(k in msg_clean for k in ["jagoda", "jagodę", "jagody", "janow", "j_janow3kq"]):
             return (
-                f"Według mojej analizy wiadomości z Polskiego ChatGPT: **Jagoda** (`j_janow3kq` / `Janow`) to nasza kumpela z ekipy i główna testerka bota! "
-                f"Lubi puszczać muzykę przez Jockie Music (ostatnio np. *Popek – Mamo Tato*), ma świetne poczucie humoru i zawsze wnosi dużo energii na kanał głosowy! 🚀"
+                f"**Jagoda** (`j_janow3kq` / `Janow`) to nasza kumpela z ekipy i główna testerka bota! "
+                f"Lubi puszczać muzykę (np. *Popek – Mamo Tato* czy *Idzie Wilk*), ma ostry, bezpośredni humor i zawsze robi dobrą atmosferę na głosowym! 🚀"
             )
 
         if any(k in msg_clean for k in ["basista", "basisty", "oliwier", "oliwiera"]):
             return (
-                f"Z analizy naszej pamięci w Polskim ChatGPT: **Oliwier** to nasz **Basista** (a Basista to Oliwier!) – zakodowałem to na stałe z Twoich wiadomości! "
-                f"Lubi dobre brzmienia basowe, wspólne granie z ekipą ZSC i trzyma świetny klimat na serwerze! 🎸"
+                f"**Oliwier** to nasz **Basista** (a Basista to Oliwier!) – nasz człowiek od basu, wspólnych gierek z ekipą ZSC i dobrego klimatu na serwerze! 🎸"
             )
 
         if any(k in msg_clean for k in ["szatek", "szatek_olo", "szatek_010", " olo "]):
             return (
-                f"Z mojej bazy Polskiego ChatGPT: **Szatek_Olo** to mój twórca, Prezes ZSC i dowódca jednostki SZAT! "
-                f"Lubi klasyki rocka i metalu (jak *Master of Puppets* Metallicy), budowanie zaawansowanych projektów i dowodzenie całą naszą ekipą na serwerze! 👑"
+                f"**Szatek_Olo** to mój twórca, Prezes ZSC i dowódca jednostki SZAT! "
+                f"Lubi klasyki Metallicy (jak *Master of Puppets*), budowanie projektów i dowodzenie całą naszą ekipą! 👑"
             )
 
-        # Powitania i zwroty z mikrofonu / czatu
-        if any(g == msg_clean for g in ["siema", "siemanko", "hej", "hejka", "elo", "witam", "yo", "czesc", "cześć", "halo", "słyszysz mnie", "slyszysz mnie"]):
-            modality_note = "Słyszę Twój głos na kanale głośno i wyraźnie!" if source_modality == "GŁOS" else "Widzę Twoją wiadomość i czuwam nad całym czatem!"
-            return (
-                f"Siemanko {author_name}! {modality_note} Analizuję na bieżąco naszą rozmowę w Polskim ChatGPT. "
-                f"Chcesz pogadać, przeanalizować sytuację na serwerze, czy mam puścić jakiś kawałek przez Jockie Music? 🚀"
-            )
+        # Powitania
+        if any(g in msg_clean for g in ["siema", "siemanko", "hej", "hejka", "elo", "witam", "yo", "czesc", "cześć", "halo", "słyszysz mnie", "slyszysz mnie"]):
+            replies = [
+                f"Siemanko {author_name}! Słyszę Cię idealnie, co tam działamy?",
+                f"Elo {author_name}! Jestem z Wami na kanale, o czym gadamy?",
+                f"Yo {author_name}! Wszystko śmiga, puszczamy jakąś nutę czy gadamy? 🚀"
+            ]
+            return random.choice(replies)
 
-        # Domyślna odpowiedź sytuacyjna oparta na ostatnich wiadomościach
-        chat_count = len(server_store.get("chat_log", [])) if server_store else 0
-        return (
-            f"Słyszę Cię {author_name} ({source_modality}: *„{user_message[:60]}”*)! Zapisałem to w pamięci Polskiego ChatGPT "
-            f"(mam już przeanalizowane {chat_count} wypowiedzi z naszego serwera). Rozwiń myśl albo powiedz, jeśli mamy puścić jakiś utwór! 🔥"
-        )
+        # Reakcja na luźne przekleństwa / zaczepki (np. styl Jagody)
+        if any(w in msg_clean for w in ["kurwa", "chuj", "jeb", "spierdalaj", "przeklinam"]):
+            chill_replies = [
+                f"Haha, luźno {author_name}, znam Twój styl! Co tam dzisiaj puszczamy na głosowym? 😎",
+                f"Spokojnie {author_name}, u nas na kanale pełen luz! Jaki kawałek odpalamy?",
+                f"Haha, dobra energia {author_name}! Daj znać jaką nutę wrzucić na głośniki! 🔥"
+            ]
+            return random.choice(chill_replies)
+
+        # Naturalne odpowiedzi konwersacyjne bez żadnego wspominania o pamięci/kodowaniu
+        natural_replies = [
+            f"Jasne {author_name}, kumam o co chodzi! Co robimy dalej?",
+            f"Dokładnie tak {author_name}! Masz jeszcze jakiś kawałek do puszczenia czy gadamy?",
+            f"No pewnie {author_name}! Jestem z Wami na bieżąco, mów śmiało co działamy! 🚀"
+        ]
+        return random.choice(natural_replies)
 
     async def _call_groq(self, messages: List[Dict[str, str]]) -> Optional[str]:
         try:

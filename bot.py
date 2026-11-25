@@ -189,13 +189,41 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
                 await voice_engine.enqueue_speech(greeting)
 
     muted_channels = set()
+    webhook_cache: Dict[int, discord.Webhook] = {}
 
-    async def execute_music_action(channel: discord.abc.Messageable, music_action: Dict[str, Any]):
+    async def send_via_music_webhook(channel: discord.abc.Messageable, cmd_text: str, author_name: str = "Szatek_Olo"):
+        """Wysyła komendę muzyczną (np. m!play) przez dedykowany Webhook kanału oraz bezpośrednio na czat."""
+        sent_wh = False
+        try:
+            if hasattr(channel, "webhooks"):
+                wh = webhook_cache.get(channel.id)
+                if wh is None:
+                    existing = await channel.webhooks()
+                    for w in existing:
+                        if w.name == "AetherMusicTrigger":
+                            wh = w
+                            break
+                    if wh is None:
+                        wh = await channel.create_webhook(name="AetherMusicTrigger")
+                    webhook_cache[channel.id] = wh
+                if wh:
+                    await wh.send(content=cmd_text, username=author_name)
+                    sent_wh = True
+        except Exception as e:
+            print(f"[WEBHOOK] Informacja: {e}")
+
+        if not sent_wh:
+            try:
+                await channel.send(cmd_text)
+            except Exception:
+                pass
+
+    async def execute_music_action(channel: discord.abc.Messageable, music_action: Dict[str, Any], author_name: str = "Szatek_Olo"):
         """
         Realizuje akcję muzyczną wyznaczoną przez Polski ChatGPT:
-        - Wysyła komendę dla Jockie Music (np. m!play Master of Puppets Metallica)
         - Wypowiada zapowiedź głosem Zofii
-        - Uruchamia odtwarzanie utworu lub testu czasowego (np. na 10 sekund) na kanale głosowym!
+        - Wysyła komendę m!play przez Webhooka kanału dla Jockie Music
+        - Kolejkuje i odtwarza utwór (lub test np. 10 sekund) bezpośrednio na kanale głosowym!
         """
         act = music_action.get("action")
         reply = music_action.get("reply", "")
@@ -211,25 +239,24 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         if act == "STOP_MUSIC":
             voice_engine.stop_audio()
             if jockie_cmd:
-                await channel.send(jockie_cmd)
+                await send_via_music_webhook(channel, jockie_cmd, author_name)
             return
 
         if act in ["PLAY_SONG", "PREVIEW_SONG"] and song_query:
             if jockie_cmd:
-                # Wyślij komendę m!play na czacie dla Jockie Music
-                await channel.send(jockie_cmd)
+                await send_via_music_webhook(channel, jockie_cmd, author_name)
 
-            # Odtwórz bezpośrednio na kanale głosowym (całość lub np. 10 sekund testu)
+            # Dodaj utwór do kolejki audio (odtworzy się zaraz po zakończeniu zapowiedzi głosowej Zofii!)
             if voice_engine.is_connected():
                 await voice_engine.play_music_preview(song_query, duration_sec=duration_sec)
 
             if duration_sec:
                 async def _stop_jockie_after_test():
-                    await asyncio.sleep(duration_sec + 1.0)
+                    await asyncio.sleep(duration_sec + 5.0)
                     try:
                         await channel.send(
                             f"⏱️ Minęło **{duration_sec} sekund** testu utworu **{song_query}**! "
-                            f"I jak – czy to jest ta piosenka, o którą Ci chodziło? (Jeśli gra Jockie Music: `m!stop`)"
+                            f"I jak – czy to jest ta piosenka, o którą Ci chodziło?"
                         )
                     except Exception:
                         pass
