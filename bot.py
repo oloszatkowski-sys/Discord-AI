@@ -16,7 +16,7 @@ import time
 import random
 import asyncio
 from collections import deque
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
