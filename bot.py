@@ -134,6 +134,7 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
     intents.guilds = True
     if with_message_content:
         intents.message_content = True
+        intents.members = True
 
     bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
@@ -338,6 +339,14 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         except Exception:
             pass
 
+        # Jeśli Polski ChatGPT w odpowiedzi zawarł komendę m!play <utwór>, automatycznie uruchom muzykę na głosowym!
+        m_auto = re.search(r"m!play\s+([^\n\r`*🚀🎶]+)", reply, re.IGNORECASE)
+        if m_auto:
+            auto_song = m_auto.group(1).strip()
+            if auto_song:
+                await send_via_music_webhook(vc_channel, f"m!play {auto_song}", author_name)
+                await voice_engine.play_music_preview(auto_song)
+
     voice_engine.set_voice_command_callback(handle_voice_input)
 
     async def speak_on_vc(message: discord.Message, text_to_speak: str):
@@ -540,6 +549,15 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
 
             # ODTWÓRZ ODPOWIEDŹ CIEPŁYM GŁOSEM NA KANALE GŁOSOWYM
             await speak_on_vc(message, reply)
+
+            # Jeśli Polski ChatGPT w odpowiedzi zawarł komendę m!play <utwór>, automatycznie uruchom muzykę na głosowym!
+            m_auto = re.search(r"m!play\s+([^\n\r`*🚀🎶]+)", reply, re.IGNORECASE)
+            if m_auto:
+                auto_song = m_auto.group(1).strip()
+                if auto_song:
+                    await send_via_music_webhook(message.channel, f"m!play {auto_song}", author_name)
+                    if voice_engine.is_connected():
+                        await voice_engine.play_music_preview(auto_song)
 
     # --- KOMENDY ---
 

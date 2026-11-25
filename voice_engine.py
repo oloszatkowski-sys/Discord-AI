@@ -71,12 +71,31 @@ if HAS_VOICE_RECV:
                     conn = getattr(vc, "_connection", None) if vc else None
                     dave_sess = getattr(conn, "dave_session", None) if conn else None
                     user_id = self._cached_id or (vc._get_id_from_ssrc(self.ssrc) if vc else None)
-                    if dave_sess is not None and user_id:
-                        try:
-                            opus_data = dave_sess.decrypt(int(user_id), davey.MediaType.audio, opus_data)
-                        except Exception:
-                            # Jeśli pakiet jest w trybie passthrough (niezaszyfrowany DAVE), użyj oryginalnego opus_data
-                            pass
+                    if dave_sess is not None:
+                        if user_id:
+                            try:
+                                opus_data = dave_sess.decrypt(int(user_id), davey.MediaType.audio, opus_data)
+                            except Exception:
+                                pass
+                        elif vc and getattr(vc, "channel", None):
+                            # Kryptograficzna identyfikacja mówiącego (gdy Szatek był już na kanale przed botem i brak ramki SPEAKING)
+                            for m in vc.channel.members:
+                                if getattr(m, "bot", False):
+                                    continue
+                                try:
+                                    dec = dave_sess.decrypt(int(m.id), davey.MediaType.audio, opus_data)
+                                    if dec:
+                                        opus_data = dec
+                                        self._cached_id = m.id
+                                        if hasattr(vc, "_add_ssrc"):
+                                            try:
+                                                vc._add_ssrc(self.ssrc, m.id)
+                                            except Exception:
+                                                pass
+                                        print(f"[VOICE_DAVE] 🔑 Powiązano mikrofon SSRC {self.ssrc} z: {m.display_name} (ID: {m.id})")
+                                        break
+                                except Exception:
+                                    continue
                 pcm = self._decoder.decode(opus_data, fec=False)
                 return packet, pcm
             return packet, b"\x00" * 3840
@@ -217,10 +236,28 @@ class DiscordVoiceEngine:
 
     def _on_incoming_voice_packet(self, user: Optional[discord.Member], data: Any):
         """Odbiera zdekodowane ramki PCM 48kHz Stereo od mówiącego użytkownika."""
-        if user is None or getattr(user, "bot", False):
-            return
         pcm = getattr(data, "pcm", None)
         if not pcm:
+            return
+
+        # Jeśli user nie został jeszcze rozwiązany przez router, dopasuj go po SSRC lub członkach kanału
+        if user is None and self.voice_client and getattr(self.voice_client, "channel", None):
+            pkt = getattr(data, "packet", None)
+            ssrc = getattr(pkt, "ssrc", None)
+            uid_mapped = self.voice_client._get_id_from_ssrc(ssrc) if (ssrc and hasattr(self.voice_client, "_get_id_from_ssrc")) else None
+            if uid_mapped:
+                user = self.voice_client.guild.get_member(uid_mapped)
+            if user is None:
+                humans = [m for m in self.voice_client.channel.members if not getattr(m, "bot", False)]
+                # Preferuj Szatka jeśli jego SSRC nie było zmapowane
+                for h in humans:
+                    if "szatek" in (h.display_name or h.name).lower():
+                        user = h
+                        break
+                if user is None and humans:
+                    user = humans[0]
+
+        if user is None or getattr(user, "bot", False):
             return
 
         now = time.monotonic()
@@ -241,7 +278,7 @@ class DiscordVoiceEngine:
     async def _stt_monitor_loop(self):
         """Monitoruje bufory głosowe użytkowników i po wykryciu końca wypowiedzi uruchamia STT po polsku."""
         while True:
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.20)
             try:
                 if not self._user_audio_buffers:
                     continue
@@ -251,8 +288,8 @@ class DiscordVoiceEngine:
                 for uid, buf in list(self._user_audio_buffers.items()):
                     silence_dur = now - buf["last_ts"]
                     total_dur = buf["last_ts"] - buf["start_ts"]
-                    # Koniec wypowiedzi po 1.1s ciszy lub osiągnięciu 11s ciągłej mowy
-                    if silence_dur >= 1.1 or total_dur >= 11.0:
+                    # Szybsza reakcja: 0.80s ciszy lub 10s ciągłej wypowiedzi
+                    if silence_dur >= 0.80 or total_dur >= 10.0:
                         ready_uids.append(uid)
 
                 for uid in ready_uids:
@@ -261,11 +298,11 @@ class DiscordVoiceEngine:
                         continue
                     raw_pcm = b"".join(buf["chunks"])
                     member = buf["member"]
-                    # Minimum ~0.55s mowy (48000 Hz * 2 kanały * 2 bajty = 192000 bajtów/sek)
-                    if len(raw_pcm) < 100000:
+                    # Obniżony próg długości (~0.18s) oraz RMS (25.0), aby łapać nawet krótkie i ciche słowa Szatka
+                    if len(raw_pcm) < 34000:
                         continue
                     rms = _compute_pcm_rms(raw_pcm)
-                    if rms < 180.0:
+                    if rms < 25.0:
                         continue
 
                     asyncio.create_task(self._transcribe_and_dispatch(member, raw_pcm))
@@ -273,17 +310,30 @@ class DiscordVoiceEngine:
                 print(f"[VOICE_ENGINE] Błąd w pętli STT: {e}")
 
     async def _transcribe_and_dispatch(self, member: discord.Member, raw_pcm: bytes):
-        """Zamienia bufor PCM 48kHz Stereo na tekst po polsku (pl-PL) i przekazuje do Polskiego ChatGPT."""
+        """Wzmacnia cichy mikrofon (Auto-Gain Control), zamienia na tekst po polsku (pl-PL) i przekazuje do Polskiego ChatGPT."""
         if not HAS_SR:
             return
+        import array
         wav_path = os.path.join(TEMP_AUDIO_DIR, f"stt_{uuid.uuid4().hex[:8]}.wav")
         try:
             def _save_and_recognize() -> Optional[str]:
+                pcm_to_write = raw_pcm
+                try:
+                    # Auto-Gain Control (AGC): wzmocnij cichy mikrofon (np. Szatka) do poziomu studyjnego!
+                    samples = array.array("h", raw_pcm)
+                    max_peak = max((abs(x) for x in samples[::4]), default=0)
+                    if 15 < max_peak < 18000:
+                        gain = min(26000.0 / max_peak, 14.0)
+                        samples = array.array("h", (max(-32767, min(32767, int(x * gain))) for x in samples))
+                        pcm_to_write = samples.tobytes()
+                except Exception:
+                    pass
+
                 with wave.open(wav_path, "wb") as wf:
                     wf.setnchannels(2)
                     wf.setsampwidth(2)
                     wf.setframerate(48000)
-                    wf.writeframes(raw_pcm)
+                    wf.writeframes(pcm_to_write)
 
                 recognizer = sr.Recognizer()
                 with sr.AudioFile(wav_path) as source:
