@@ -117,13 +117,67 @@ def format_user_greeting(member: discord.Member) -> str:
         return f"Cześć {member.display_name}! Witam na kanale głosowym. O czym pogadamy?"
 
 
-def is_admin_or_szatek(author: discord.Member) -> bool:
-    """Sprawdza czy użytkownik to Szatek_Olo lub administrator serwera."""
-    author_name = (author.display_name or author.name).lower()
-    if any(k in author_name for k in ["szatek", "szatek_olo", "olo", "szatek_010"]):
+def is_leave_command(text: str) -> bool:
+    """Wykrywa intencję opuszczenia kanału głosowego (w mowie lub tekście)."""
+    t = re.sub(r"[!?,.\"\']", " ", text.lower()).strip()
+    words = t.split()
+    leave_phrases = [
+        "wyjdź z kanału", "wyjdz z kanalu", "wyjdź z vc", "wyjdz z vc",
+        "wyjdź stąd", "wyjdz stad", "wyjdź stad", "opuść kanał", "opusc kanal",
+        "zejdź z kanału", "zejdz z kanalu", "idź sobie", "idz sobie", "idź stąd", "idz stad",
+        "wyjdź", "wyjdz", "rozłącz się", "rozlacz sie", "odłącz się", "odlacz sie",
+        "wypierdalaj", "spierdalaj", "wypad stąd", "wypad stad", "spadaj stąd", "spadaj stad",
+        "leave vc", "disconnect", "leave voice"
+    ]
+    if any(p in t for p in leave_phrases):
         return True
-    if hasattr(author, "guild_permissions") and author.guild_permissions.administrator:
+    if len(words) <= 3 and any(w in words for w in ["wyjdź", "wyjdz", "opusc", "opuść", "rozłącz", "rozlacz", "wypierdalaj", "spierdalaj"]):
         return True
+    return False
+
+
+def should_bot_speak_on_voice(text: str, author_name: str) -> bool:
+    """
+    Bramka głosu (Voice Gatekeeper): decyduje czy bot ma zabrać głos,
+    czy tylko pasywnie słuchać w tle, gdy gracze rozmawiają między sobą.
+    """
+    t = re.sub(r"[!?,.\"\']", " ", text.lower()).strip()
+    words = t.split()
+
+    # 1. Wywołanie bota po imieniu (w tym fonetyczne przeinaczenia Google STT: eder, eter, ejder itp.)
+    bot_aliases = [
+        "aether", "eder", "eter", "ejder", "ajter", "aeter", "ether", "edward", "edek",
+        "bot", "bocie", "ai", "chat gpt", "chatgpt", "panie bocie", "ej bot", "halo bot"
+    ]
+    if any(alias in t for alias in bot_aliases):
+        return True
+
+    # 2. Bezpośrednie intencje i polecenia skierowane do bota
+    action_triggers = [
+        "opowiedz żart", "opowiedz zart", "powiedz dowcip", "opowiesz mi", "znasz żart", "znasz zart",
+        "zabawny żart", "zabawny zart", "kawał", "kawal", "rozbaw mnie",
+        "czego się nauczyłeś", "czego sie nauczyles", "co wiesz o serwerze", "co wiesz o nas",
+        "co wiesz", "co pamiętasz", "co pamietasz",
+        "przeczytaj raport", "wykonaj raport", "zrób raport", "zrob raport", "jaki jest raport",
+        "zaśpiewaj", "zaspiewaj", "puść", "pusc", "zagraj", "jaka to piosenka", "jaki to kawałek",
+        "ścisz", "scisz", "ciszej", "głośniej", "glosniej", "wyłącz muzykę", "wylacz muzyke",
+        "stop muzyka", "wyjdź", "wyjdz", "zakoduj", "zapamiętaj", "zapamietaj"
+    ]
+    if any(trig in t for trig in action_triggers):
+        return True
+
+    # 3. Pytania o relacje i definicje (np. "kto to mamusia", "kto to basista")
+    if any(q in t for q in ["kto to jest", "kto to", "kim jest", "kto jest", "co to jest", "co to"]):
+        return True
+
+    # 4. Zwrot do całej grupy na kanale
+    if any(g in t for g in ["ej ekipa", "siemanko wszystkim", "co tam wszyscy", "słuchajcie wszyscy", "halo wszyscy"]):
+        return True
+
+    # 5. Złość / zniecierpliwienie na bota
+    if any(a in t for a in ["wkurwiasz mnie", "zamknij się", "zamknij sie", "denerwujesz mnie", "cicho bądź", "cicho badz"]):
+        return True
+
     return False
 
 
@@ -282,9 +336,11 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         """
         Obsługuje mowę użytkownika usłyszaną na kanale głosowym (STT pl-PL):
         1. Uczy się ze słuchania i zapisuje wypowiedź w pamięci serwera.
-        2. Sprawdza wyuczone reguły (np. banan -> jabłko).
-        3. Sprawdza intencje muzyczne (zaśpiewaj / m!play / jaka to piosenka / test na 10 sekund).
-        4. Wysyła pełny kontekst wszystkich wiadomości do Polskiego ChatGPT i odpowiada głosem na żywo!
+        2. Sprawdza intencję opuszczenia kanału głosowego (gdy mówią, żeby iść - idzie!).
+        3. Stosuje Bramkę Głosu (Voice Gatekeeper) - milczy, gdy gracze rozmawiają między sobą.
+        4. Sprawdza reguły i intencje muzyczne (m!play, test na 10s, regulacja głośności).
+        5. Sprawdza bazę wiedzy serwera (find_knowledge) przed wysłaniem do chmury.
+        6. Generuje głęboką analizę w Polskim ChatGPT i odpowiada męskim basem!
         """
         if not recognized_text or member.bot:
             return
@@ -300,10 +356,29 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         print(f"[VOICE_CHAT] 🎙️ [{author_name} na głosowym #{vc_channel.name}]: {recognized_text}")
         conv_tracker.add_message(vc_channel.id, author_name, f"(GŁOS) {recognized_text}", is_bot=False)
 
-        # 1. Ucz się ze słuchania (source="GŁOS")
+        # 1. Zawsze ucz się ze słuchania w tle (source="GŁOS")
         learned_voice = memory_vault.learn_from_message(author_name, recognized_text, guild_id, guild_name, source="GŁOS")
 
-        # 2. Sprawdź wyuczone reguły reakcji (np. powiesz "banan" -> odpowie "jabłko")
+        # 2. WYKRYCIE INTENCJI OPUSZCZENIA KANAŁU ("wyjdź z kanału", "idź stąd", "opuść vc", "wypierdalaj")
+        if is_leave_command(recognized_text):
+            farewell = "Dobra ekipa, uciekam i nie przeszkadzam! Zawołajcie jak będę potrzebny, na razie!"
+            print(f"[VOICE_LEAVE] 🚪 {author_name} poprosił o wyjście z kanału. Rozłączam natychmiast!")
+            await voice_engine.enqueue_speech(farewell)
+            try:
+                await vc_channel.send(f"🎙️ **{author_name} (Głos):** *„{recognized_text}”*\n🔇 **Aether AI:** {farewell}")
+            except Exception:
+                pass
+            await asyncio.sleep(2.0)
+            await voice_engine.disconnect()
+            return
+
+        # 3. BRAMKA GŁOSU (Voice Gatekeeper): Czy mowa jest skierowana do bota, czy gracze gadają ze sobą?
+        should_speak = should_bot_speak_on_voice(recognized_text, author_name)
+        if not should_speak:
+            print(f"[VOICE_GATEKEEPER] 👂 Słucham w tle (bez przerywania ludziom): [{author_name}]: {recognized_text}")
+            return
+
+        # 4. Sprawdź wyuczone reguły reakcji (np. powiesz "banan" -> odpowie "jabłko")
         matched_rule = memory_vault.match_rule(recognized_text, guild_id)
         if matched_rule:
             await voice_engine.enqueue_speech(matched_rule)
@@ -321,11 +396,33 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
                 pass
             return
 
+        # 5. Sprawdź reakcję na złość / zniecierpliwienie ("Wkurwiasz mnie", "zamknij się")
+        t_clean = re.sub(r"[!?,.\"\']", " ", recognized_text.lower()).strip()
+        if any(a in t_clean for a in ["wkurwiasz mnie", "zamknij się", "zamknij sie", "denerwujesz mnie", "cicho bądź", "cicho badz"]):
+            quiet_reply = f"Sorki {author_name}, już milknę i nie przeszkadzam! Zawołajcie jak będę potrzebny 🤐"
+            await voice_engine.enqueue_speech(quiet_reply)
+            try:
+                await vc_channel.send(f"🎙️ **{author_name} (Głos):** *„{recognized_text}”*\n🤐 **Aether AI:** {quiet_reply}")
+            except Exception:
+                pass
+            return
+
         memory_ctx = memory_vault.build_context_for_prompt(author_name, recognized_text, guild_id, guild_name)
         server_store = memory_vault._get_server_store(guild_id, guild_name)
         global_lore = memory_vault.data.get("global_lore", {})
 
-        # 3. Sprawdź intencję muzyczną przez Polski ChatGPT (zaśpiewaj / m!play / jaka to piosenka / test 10s)
+        # 6. Sprawdź bezpośrednią wiedzę ze Skarbca Pamięci (find_knowledge) - ZERO halucynacji o serwerze!
+        know_res = memory_vault.find_knowledge(recognized_text, author_name, guild_id, guild_name)
+        if know_res:
+            conv_tracker.add_message(vc_channel.id, "Aether AI", know_res, is_bot=True)
+            await voice_engine.enqueue_speech(know_res)
+            try:
+                await vc_channel.send(f"🎙️ **{author_name} (Głos):** *„{recognized_text}”*\n🧠 **Aether AI:** {know_res}")
+            except Exception:
+                pass
+            return
+
+        # 7. Sprawdź intencję muzyczną przez Polski ChatGPT (zaśpiewaj / m!play / jaka to piosenka / test 10s)
         music_intent = await ai_brain.analyze_music_intent(vc_channel.id, author_name, recognized_text, memory_ctx)
         if music_intent:
             try:
@@ -335,7 +432,7 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             await execute_music_action(vc_channel, music_intent)
             return
 
-        # 4. Wygeneruj odpowiedź w Polskim ChatGPT na podstawie wszystkich wiadomości i 4 przykładów sytuacji
+        # 8. Wygeneruj odpowiedź w Polskim ChatGPT na podstawie wszystkich wiadomości i dynamiki grupy
         history = conv_tracker.get_history(vc_channel.id)
         reply = await ai_brain.generate_response(
             author_name,
@@ -442,17 +539,28 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             await bot.process_commands(message)
             return
 
-        # 4. Naturalne polecenia wejścia na kanał głosowy (choc na vc, chodź na vc, wbijaj na głosowy)
+        # 3b. Polecenie opuszczenia kanału głosowego na czacie
+        if is_leave_command(content) and voice_engine.is_connected():
+            farewell = "Dobra, uciekam z kanału głosowego! Zawołajcie jak będę potrzebny."
+            await message.reply(farewell, mention_author=False)
+            await voice_engine.enqueue_speech(farewell)
+            await asyncio.sleep(2.0)
+            await voice_engine.disconnect()
+            return
+
+        # 4. Naturalne polecenia wejścia na kanał głosowy (choc na vc, idz z nami na vc, chodź na vc, wbijaj na głosowy)
         c_low = re.sub(r"[\/\\!\?,\.]", " ", content.lower())
         clean_words = [w.strip() for w in re.sub(r"<@!?\d+>|<@&\d+>", "", c_low).split() if w.strip()]
         is_join_command = (
-            bool(re.search(r"\b(choc|choć|chodz|chodź|wbij|wbijaj|wejdz|wejdź|dolacz|dołącz)\b.*\b(vc|dc|glosow|głosow|kanal|kanał)\b", c_low))
+            bool(re.search(r"\b(choc|choć|chodz|chodź|wbij|wbijaj|wejdz|wejdź|dolacz|dołącz|idz|idź|dawaj)\b.*\b(vc|dc|glosow|głosow|kanal|kanał)\b", c_low))
             or any(p in c_low for p in [
                 "choc na vc", "choć na vc", "chodz na vc", "chodź na vc", "wbij na vc", "wbij vc",
                 "wbijaj na vc", "wejdz na vc", "wejdź na vc", "wbij na glosowy", "chodź na głosowy",
                 "chodz na glosowy", "choc na glosowy", "chodź pogadać", "choc pogadac", "wbijaj na dc",
                 "chodz na dc", "choc na dc", "chodź na dc", "wskakuj na vc", "dołącz na kanał",
-                "dolacz na kanal", "dolacz na glosowy", "dołącz na kanał głosowy", "chodź pogadać"
+                "dolacz na kanal", "dolacz na glosowy", "dołącz na kanał głosowy", "chodź pogadać",
+                "idz z nami na vc", "idź z nami na vc", "idz na vc", "idź na vc", "chodź z nami na vc",
+                "chodz z nami na vc", "wbijaj z nami", "wejdz z nami", "wejdź z nami", "dawaj na vc"
             ])
             or (len(clean_words) == 1 and clean_words[0] in ["dołącz", "dolacz", "wbij", "chodź", "chodz", "choc", "join"])
         )
@@ -494,9 +602,9 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         is_dedicated_bot_channel = (message.channel.id == TARGET_VOICE_CHANNEL_ID)
 
         name_triggers = [
-            "bot", "bocie", "aether", "aetherze", "ai", "chat gpt", "chatgpt",
-            "mordo", "ziomek", "ej bot", "halo bot", "hej bot", "powiedz", "odezwij",
-            "jagoda", "basista", "oliwier", "szatek", "co wiesz", "analiza", "przeanalizuj"
+            "bot", "bocie", "aether", "aetherze", "eder", "eter", "ejder", "ajter", "ai", "chat gpt", "chatgpt",
+            "panie bocie", "mordo", "ziomek", "ej bot", "halo bot", "hej bot", "powiedz", "odezwij",
+            "co wiesz", "analiza", "przeanalizuj"
         ]
         words_in_msg = re.findall(r"\b\w+\b", c_low)
         starts_or_calls_bot = (

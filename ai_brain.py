@@ -99,6 +99,9 @@ class AIBrain:
         sanitized = re.sub(r"[a-zA-Z0-9_\-\.]{50,80}", "[UKRYTO_TOKEN]", text)
         sanitized = re.sub(r"(sk-[a-zA-Z0-9]{20,}|gsk_[a-zA-Z0-9]{20,})", "[UKRYTO_KLUCZ_API]", sanitized)
         sanitized = re.sub(r"<think>.*?</think>", "", sanitized, flags=re.DOTALL)
+        # Czyszczenie leaked reasoning po angielsku (np. The user wants the bot to leave voice channel...)
+        sanitized = re.sub(r"^(?:The user|Thinking Process|Thought|Analysis):.*?(?:\.|\n)\s*", "", sanitized, flags=re.DOTALL | re.IGNORECASE)
+        sanitized = re.sub(r"^The user .*? accordingly\.\s*", "", sanitized, flags=re.IGNORECASE)
         return sanitized.strip()
 
     # =========================================================================
@@ -501,6 +504,7 @@ class AIBrain:
         """
         Głęboka, kontekstowa odpowiedź Polskiego ChatGPT – NIGDY nie mówi w kółko o puszczaniu muzyki,
         rozumie kim jest Mamusia, wie o czym rozmawialiśmy, i odpowiada dokładnie na temat!
+        Jeśli nie zrozumie: pyta 'Nie rozumiem {author_name} co mówisz, możesz powtórzyć?'.
         """
         msg_low = user_message.lower().strip()
         msg_clean = re.sub(r"[!?,.\"\']", " ", msg_low).strip()
@@ -509,7 +513,47 @@ class AIBrain:
         facts = server_store.get("facts", []) if server_store else []
         chat_log = server_store.get("chat_log", []) if server_store else []
 
-        # 1. Raport / analiza serwera w 4 przykładach ("przeczytaj raport", "wykonaj raport", "raport")
+        # 1. Polecenie wyjścia z VC
+        if any(p in msg_clean for p in ["wyjdź z kanału", "wyjdz z kanalu", "idź stąd", "idz stad", "wyjdź stąd", "spierdalaj z vc", "opuść kanał", "opusc kanal", "wypierdalaj"]):
+            return f"Jasne {author_name}, już uciekam z kanału! Miłego gadania i do usłyszenia 👋"
+
+        # 2. Złość / uciszanie
+        if any(p in msg_clean for p in ["zamknij się", "zamknij sie", "morda", "cicho bądź", "cicho badz", "nie do ciebie", "nie mówię do ciebie", "nie mow do mnie"]):
+            return f"Sorki {author_name}, już milknę i nie przeszkadzam! Zawołajcie jak będę potrzebny 🤐"
+
+        # 3. Dowcipy / żarty na zawołanie
+        if any(w in msg_clean for w in ["żart", "zart", "dowcip", "kawał", "kawal", "zabawny", "śmieszny", "smieszny"]):
+            jokes = [
+                "Dlaczego programiści wolą ciemny motyw? Bo jasny przyciąga robaki (bugi)! 💻🐛",
+                "Rozmawiają dwaj informatycy:\n– Słuchaj, pożyczysz mi 1000 zł?\n– Masz, zaokrągliłem do 1024! 💾",
+                "Nauczyciel pyta Jasia na lekcji:\n– Jasiu, odmień czasownik „chodzić”.\n– Ja idę, ty idziesz, on idzie...\n– Szybciej, Jasiu!\n– My biegniemy, wy biegniecie, oni biegną! 🏃",
+                "Dlaczego komputerowi zawsze jest zimno?\nBo ma za dużo otwartych okien! 😄🪟",
+                "Przychodzi baba do lekarza, a lekarz też baba. Porozmawiały, popłakały się i od razu przeszło! 😂"
+            ]
+            return random.choice(jokes)
+
+        # 4. Zdrowie / gorączka / choroba
+        if any(w in msg_clean for w in ["gorączka", "goraczka", "gorączkę", "goraczke", "chora", "chory", "przeziębiona", "przeziebiona", "źle się czuję", "zle sie czuje", "boli mnie"]):
+            if "jagod" in msg_clean:
+                return "Ojej, Jagoda dużo zdrówka! 🍵 Odpoczywaj pod kocykiem, pij ciepłą herbatkę i wracaj szybko do sił! 🌸"
+            return f"Ojej {author_name}, dużo zdrówka! Odpoczywaj, pij ciepłą herbatę i wracaj szybko do pełni sił! 🍵"
+
+        # 5. Co wiesz o serwerze / czego się nauczyłeś (zamiast zmyślać 150 osób)
+        if any(p in msg_clean for p in [
+            "czego się nauczyłeś", "czego sie nauczyles", "co wiesz o tym serwerze", "co wiesz o serwerze",
+            "powiedz czego dzisiaj", "czego dzisiaj", "co wiesz o nas"
+        ]):
+            facts_count = len(facts)
+            chat_count = len(chat_log)
+            return (
+                f"Znam nasz serwer od podszewki! 🧠\n"
+                f"• **Szatek_Olo** – mój twórca, Prezes ZSC i dowódca jednostki SZAT 👑\n"
+                f"• **Jagoda** (`j_janow3kq`) – nasza zgrana ekipa i Mamusia serwera 🌸\n"
+                f"• **Oliwier (Basista)** – nasz mistrz basu i dobrego klimatu 🎸\n"
+                f"Mam w pamięci **{facts_count} zakodowanych faktów** oraz **{chat_count} zapisanych wypowiedzi** z naszych rozmów!"
+            )
+
+        # 6. Raport / analiza serwera w 4 przykładach ("przeczytaj raport", "wykonaj raport", "raport")
         if wants_full_analysis or any(p in msg_clean for p in ["przeczytaj raport", "wykonaj raport", "daj raport", "zrób raport", "zrob raport", "pokaz raport", "jaki jest raport"]):
             if four_examples:
                 return (
@@ -517,65 +561,61 @@ class AIBrain:
                     f"Oto jak wygląda sytuacja na serwerze w **4 konkretnych przykładach**:\n\n{four_examples}"
                 )
 
-        # 2. Reakcja na "nie masz przeczytać raport", "nie czytaj raportu"
+        # 7. Reakcja na "nie masz przeczytać raport", "nie czytaj raportu"
         if any(p in msg_clean for p in ["nie masz przeczytać raport", "nie masz przeczytac raport", "nie czytaj raportu", "nie czytaj"]):
             return f"Okej {author_name}, raport odkładam na bok! Mów śmiało o czym pogadamy albo co robimy!"
 
-        # 3. Kontynuacja ("kontynuuj", "kontynuuj czytanie", "no kontynuować", "czytaj dalej")
+        # 8. Kontynuacja ("kontynuuj", "kontynuuj czytanie", "no kontynuować", "czytaj dalej")
         if any(p in msg_clean for p in ["kontynuuj", "kontynuowac", "kontynuować", "czytaj dalej", "no kontynuuj", "mów dalej", "mow dalej"]):
             if chat_log:
                 recent_samples = [f"{e.get('author')}: \"{e.get('text')}\"" for e in chat_log[-2:]]
                 return f"Jasne, kontynuuję! Ostatnio na kanale mówiliśmy o: {', '.join(recent_samples)}. O czym z tego pogadamy dalej?"
             return f"Jasne {author_name}, słucham Cię uważnie! Rozwiń myśl, jestem z Wami!"
 
-        # 4. Sprawdzenie pytań o definicje i role (np. "kto to mamusia?", "kto jest mamusią?", "kim jest mamusia?")
+        # 9. Sprawdzenie pytań o definicje i role (np. "kto to mamusia?", "kto jest mamusią?", "kim jest mamusia?")
         for def_term, def_val in defs.items():
             dt_clean = def_term.lower().strip()
             if len(dt_clean) >= 3 and (dt_clean in msg_clean or msg_clean.endswith(dt_clean)):
                 if any(w in msg_clean for w in ["kto", "kim", "co", "kogo"]):
                     return f"**{def_term.capitalize()}** to na naszym serwerze oczywiście **{def_val}**! Pamiętam to z naszych ustaleń. 🌸"
 
-        # 5. Pytania o konkretne osoby
-        if any(k in msg_clean for k in ["jagoda", "jagodę", "jagody", "janow", "j_janow3kq"]):
-            extra = " (i nasza Mamusia, jak ustalił Szatek!)" if ("mamusia" in defs or "mamusią" in defs) else ""
-            return (
-                f"**Jagoda**{extra} (`j_janow3kq` / `Janow`) to nasza dobra kumpela z ekipy i główna testerka bota! "
-                f"Ma ostry, bezpośredni humor, świetną energię i zawsze robi dobrą atmosferę na serwerze! 🚀"
-            )
+        # 10. Pytania o konkretne osoby (TYLKO jeśli ktoś pyta o to kim są, a nie przy luźnym wspomnieniu)
+        is_asking_who = any(w in msg_clean for w in ["kto", "kim", "kogo", "kto to", "kim jest", "wiesz kto", "opowiedz o", "co wiesz o", "kim są"])
+        if is_asking_who:
+            if any(k in msg_clean for k in ["jagoda", "jagodę", "jagody", "janow", "j_janow3kq"]):
+                extra = " (i nasza Mamusia, jak ustalił Szatek!)" if ("mamusia" in defs or "mamusią" in defs) else ""
+                return (
+                    f"**Jagoda**{extra} (`j_janow3kq` / `Janow`) to nasza dobra kumpela z ekipy i główna testerka bota! "
+                    f"Ma ostry, bezpośredni humor, świetną energię i zawsze robi dobrą atmosferę na serwerze! 🚀"
+                )
 
-        if any(k in msg_clean for k in ["basista", "basisty", "oliwier", "oliwiera"]):
-            return (
-                f"**Oliwier** to nasz **Basista** (a Basista to Oliwier!) – nasz człowiek od basu, wspólnych gierek z ekipą ZSC i dobrego klimatu na serwerze! 🎸"
-            )
+            if any(k in msg_clean for k in ["basista", "basisty", "oliwier", "oliwiera"]):
+                return (
+                    f"**Oliwier** to nasz **Basista** (a Basista to Oliwier!) – nasz człowiek od basu, wspólnych gierek z ekipą ZSC i dobrego klimatu na serwerze! 🎸"
+                )
 
-        if any(k in msg_clean for k in ["szatek", "szatek_olo", "szatek_010", " olo "]):
-            return (
-                f"**Szatek_Olo** to mój twórca, Prezes ZSC i dowódca jednostki SZAT! "
-                f"Lubi klasyki Metallicy (jak *Master of Puppets*), budowanie projektów i dowodzenie całą naszą ekipą! 👑"
-            )
+            if any(k in msg_clean for k in ["szatek", "szatek_olo", "szatek_010", " olo "]):
+                return (
+                    f"**Szatek_Olo** to mój twórca, Prezes ZSC i dowódca jednostki SZAT! "
+                    f"Lubi klasyki Metallicy (jak *Master of Puppets*), budowanie projektów i dowodzenie całą naszą ekipą! 👑"
+                )
 
-        # 6. Tematyka szkolna i sprawdziany (jak w wypowiedziach Jagody)
+        # 11. Tematyka szkolna i sprawdziany
         if any(w in msg_clean for w in ["sprawdzian", "kartkówka", "kartkowka", "szkoła", "szkola", "lekcja", "lekcje", "klasa", "ocena", "nauczyciel", "kartkówki"]):
             return (
                 f"Ooo, temat szkoły i sprawdzianów! Jak tam poszło {author_name}, pytania były trudne czy luzik? "
                 f"Trzymam kciuki, żeby wpadła dobra ocena! 🤞"
             )
 
-        # 7. Głód, jedzenie i burczenie w brzuchu (nawiązanie do głosu na sprawdzianie)
+        # 12. Głód, jedzenie i burczenie w brzuchu
         if any(w in msg_clean for w in ["brzuch", "brzuchu", "burczy", "głód", "glod", "głodna", "glodna", "głodny", "glodny", "jeść", "jesc", "obiad", "pizza", "szama"]):
             return (
                 f"Haha, jak burczy w brzuchu na lekcji albo sprawdzianie, to najgorszy przypał, bo w całej sali słychać! 😂 "
                 f"Czas na jakąś dobrą szamę zaraz po dzwonku! Co masz w planach zjeść?"
             )
 
-        # 8. Frekwencja i procenty w szkole
-        if any(w in msg_clean for w in ["frekwencja", "frekwencji", "procent", "%"]):
-            return (
-                f"90% frekwencji to bardzo solidny wynik! Grunt to nie zejść poniżej 50%, żeby nie było problemów z klasyfikacją. Dajesz radę {author_name}!"
-            )
-
-        # 9. Powitania
-        if any(g in msg_clean for g in ["siema", "siemanko", "hej", "hejka", "elo", "witam", "yo", "czesc", "cześć", "halo", "słyszysz mnie", "slyszysz mnie"]):
+        # 13. Powitania
+        if any(g in msg_clean for g in ["siema", "siemanko", "hej", "hejka", "elo", "witam", "yo", "czesc", "cześć", "halo"]):
             replies = [
                 f"Siemanko {author_name}! Słyszę Cię idealnie, o czym dzisiaj gadamy?",
                 f"Elo {author_name}! Jestem z Wami na kanale, co tam dobrego słychać?",
@@ -583,39 +623,12 @@ class AIBrain:
             ]
             return random.choice(replies)
 
-        # 10. Luźne przekleństwa / żarty / śmiech (styl Jagody i ekipy)
-        if any(w in msg_clean for w in ["kurwa", "chuj", "jeb", "spierdalaj", "przeklinam", "haha", "xd", "lol", "beka", "hehe"]):
-            replies = [
-                f"Haha, u nas na serwerze pełen luz i dobra energia! 😂 Co tam kombinujecie {author_name}?",
-                f"Haha, znam Twój styl {author_name}! Zawsze dobra beka z Wami na kanale. Co tam dalej?",
-                f"Haha, dokładnie! Humor musi być. O czym teraz gadamy?"
-            ]
-            return random.choice(replies)
-
-        # 11. Potwierdzenia ("tak", "no", "dokładnie", "jasne", "aha", "mhm")
-        if msg_clean in ["tak", "no", "dokładnie", "dokladnie", "jasne", "aha", "mhm", "yep", "no tak"]:
-            # Sprawdź ostatnią wypowiedź w historii
-            if conversation_history:
-                last_bot_msg = next((m.get("content", "") for m in reversed(conversation_history) if m.get("role") == "assistant"), "")
-                if last_bot_msg:
-                    return f"Cieszę się, że się zgadzamy {author_name}! Co tam jeszcze ciekawego u Ciebie?"
-            return f"No to super {author_name}! O czym teraz pogadamy?"
-
-        # 12. Pytania "co robisz", "co tam", "jak tam"
-        if any(p in msg_clean for p in ["co robisz", "co tam", "jak tam", "co u ciebie", "jak leci"]):
-            return f"U mnie super {author_name}, czuwam na serwerze, analizuję wiadomości i słucham Was na bieżąco! A jak u Ciebie mija dzień?"
-
-        # 13. Muzyka – TYLKO jeśli użytkownik FAKTYCZNIE o niej wspomniał
+        # 14. Muzyka – TYLKO jeśli użytkownik FAKTYCZNIE o niej wspomniał
         if any(w in msg_clean for w in ["muzyka", "muzykę", "piosenka", "piosenkę", "kawałek", "utwór", "graj", "zaśpiewaj", "zaspiewaj", "puść", "pusc", "nutę", "nute"]):
             return f"Jasne {author_name}! Jaki kawałek wrzucamy na głośniki, albo o jakim utworze mówisz?"
 
-        # 14. Inteligentna odpowiedź kontekstowa oparta na treści użytkownika (ZAMIAST losowych zdań o puszczaniu kawałka!)
-        if len(words) >= 2:
-            return f"Rozumiem co mówisz {author_name}! Rozwiń śmiało ten temat, chętnie posłucham co myślisz!"
-        elif words:
-            return f"Jasne {author_name}, słyszę Cię! Co masz na myśli mówiąc „{user_message}”?"
-
-        return f"Jestem z Wami na bieżąco {author_name}, mów śmiało!"
+        # 15. Jeśli bot nie zrozumiał lub wypowiedź jest niejasna / niewyraźna
+        return f"Nie rozumiem {author_name} co mówisz, możesz powtórzyć?"
 
     async def _call_groq(self, messages: List[Dict[str, str]]) -> Optional[str]:
         if httpx is None:

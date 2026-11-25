@@ -48,7 +48,9 @@ try:
 except ImportError:
     HAS_YTDLP = False
 
-DEFAULT_WARM_VOICE = "pl-PL-ZofiaNeural"
+DEFAULT_WARM_VOICE = "pl-PL-MarekNeural"
+DEFAULT_VOICE_PITCH = "-12Hz"
+DEFAULT_VOICE_RATE = "+0%"
 TEMP_AUDIO_DIR = "temp_audio"
 
 
@@ -152,8 +154,10 @@ def _compute_pcm_rms(pcm_bytes: bytes) -> float:
 
 
 class DiscordVoiceEngine:
-    def __init__(self, voice_name: str = DEFAULT_WARM_VOICE):
+    def __init__(self, voice_name: str = DEFAULT_WARM_VOICE, voice_pitch: str = DEFAULT_VOICE_PITCH, voice_rate: str = DEFAULT_VOICE_RATE):
         self.voice_name = voice_name or DEFAULT_WARM_VOICE
+        self.voice_pitch = voice_pitch or DEFAULT_VOICE_PITCH
+        self.voice_rate = voice_rate or DEFAULT_VOICE_RATE
         self.voice_client: Optional[discord.VoiceClient] = None
         self.speech_queue: asyncio.Queue = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
@@ -571,11 +575,11 @@ class DiscordVoiceEngine:
                             )
                     continue
 
-                # B. ODTWARZANIE MOWY TTS (Ciepły głos Zofii)
+                # B. ODTWARZANIE MOWY TTS (Głęboki, basowy głos męski Marka)
                 text = str(item)
                 mp3_path = os.path.join(TEMP_AUDIO_DIR, f"tts_{uid}.mp3")
 
-                communicate = edge_tts.Communicate(text, self.voice_name, rate="+2%", pitch="+0Hz")
+                communicate = edge_tts.Communicate(text, self.voice_name, rate=self.voice_rate, pitch=self.voice_pitch)
                 await communicate.save(mp3_path)
 
                 convert_cmd = [

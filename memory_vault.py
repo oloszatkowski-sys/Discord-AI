@@ -267,6 +267,13 @@ class MemoryVault:
             if "chat_log" not in self.data["servers"][g_id]:
                 self.data["servers"][g_id]["chat_log"] = []
 
+        # Oczyszczenie fałszywych definicji ze słów pytających (np. 'bus' -> 'Kto' z pytania 'konik kto to bus')
+        bad_keys = ["bus", "kto", "co", "czy", "jak", "gdzie", "kiedy", "dlaczego", "czemu", "po co"]
+        defs = self.data["servers"][g_id].get("definitions", {})
+        for bk in bad_keys:
+            if bk in defs:
+                del defs[bk]
+
         self.data["servers"][g_id]["last_active"] = datetime.utcnow().isoformat()
         return self.data["servers"][g_id]
 
@@ -462,15 +469,22 @@ class MemoryVault:
         # 4b. SPECJALNA DETEKCJA RELACJI I KSYWEK (np. "Zapamietaj ze nazwyac masz Jagode MAMUSIĄ!", "Jagoda to Mamusia")
         # Sprawdzamy zarówno parsed_fact, jak i cały content
         check_texts = [t for t in [parsed_fact, content] if t]
+        is_question = any(re.search(r"\b" + re.escape(q) + r"\b", c_low) for q in ["kto", "co", "czy", "jak", "gdzie", "kiedy", "dlaczego", "czemu", "jaka", "jaki", "jakie", "który", "ktory", "która", "ktora"])
+        
         for ct in check_texts:
             m1 = re.search(r'(?:nazywać|nazywac|nazwyac|mówić\s+na|mowic\s+na|mów\s+na|mow\s+na|wołaj\s+na|wolaj\s+na)\s+(?:masz\s+)?([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_]+)\s+(?:jako\s+|per\s+)?([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_!]+)', ct, re.IGNORECASE)
             m2 = re.search(r'masz\s+(?:nazywać|nazywac|nazwyac|mówić\s+na|mowic\s+na)\s+([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_]+)\s+(?:jako\s+|per\s+)?([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_!]+)', ct, re.IGNORECASE)
-            m3 = re.search(r'([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_]+)\s+to\s+([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_!]+)', ct, re.IGNORECASE) if " to " in ct.lower() and not any(ct.lower().strip().startswith(q) for q in ["kto ", "co ", "czy ", "jak "]) else None
+            m3 = re.search(r'([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_]+)\s+to\s+([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_!]+)', ct, re.IGNORECASE) if (" to " in ct.lower() and not is_question and "?" not in ct) else None
             m_nick = m1 or m2 or m3
 
             if m_nick:
                 p_raw = m_nick.group(1).strip().rstrip("!.,")
                 r_raw = m_nick.group(2).strip().rstrip("!.,")
+                
+                # Odrzuć jeśli któreś ze słów jest pytaniem lub zaimkiem
+                if any(w in [p_raw.lower(), r_raw.lower()] for w in ["kto", "co", "czy", "jak", "gdzie", "kiedy", "bus", "nie", "tak"]):
+                    continue
+
                 p_norm = "Jagoda" if any(k in p_raw.lower() for k in ["jagod", "janow"]) else p_raw.capitalize()
                 r_norm = "Mamusia" if any(k in r_raw.lower() for k in ["mamus", "mama", "matk"]) else r_raw.capitalize()
 
@@ -517,12 +531,12 @@ class MemoryVault:
             return None
 
         # 5. Ciche kodowanie definicji, relacji i faktów w tle (BEZ mówienia i pisania że zakodowano!)
-        if " to " in c_low and "?" not in content and len(content.split()) <= 6:
-            if not any(c_low.startswith(q) for q in ["kto ", "co ", "czy ", "jak ", "gdzie ", "kiedy ", "jaka ", "jaki ", "a kto", "a co", "nie "]):
-                parts = re.split(r"\s+to\s+", content, maxsplit=1, flags=re.IGNORECASE)
-                if len(parts) == 2 and 2 <= len(parts[0].strip()) <= 25 and 2 <= len(parts[1].strip()) <= 60:
-                    term = parts[0].strip().rstrip("!.,")
-                    val = parts[1].strip().rstrip("!.,")
+        if " to " in c_low and "?" not in content and len(content.split()) <= 6 and not is_question:
+            parts = re.split(r"\s+to\s+", content, maxsplit=1, flags=re.IGNORECASE)
+            if len(parts) == 2 and 2 <= len(parts[0].strip()) <= 25 and 2 <= len(parts[1].strip()) <= 60:
+                term = parts[0].strip().rstrip("!.,")
+                val = parts[1].strip().rstrip("!.,")
+                if term.lower() not in ["kto", "co", "czy", "jak", "gdzie", "kiedy", "nie", "tak"] and val.lower() not in ["kto", "co", "czy"]:
                     if self._is_safe_fact(term) and self._is_safe_fact(val):
                         t_low = term.lower()
                         v_low = val.lower()
