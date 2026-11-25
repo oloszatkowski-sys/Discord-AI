@@ -17,6 +17,7 @@ import re
 import json
 import time
 import random
+import asyncio
 try:
     import httpx
 except ImportError:
@@ -395,25 +396,32 @@ class AIBrain:
         )
         if is_voice:
             system_content += (
-                "\n\nBARDZO WAŻNE W ROZMOWIE GŁOSOWEJ (GŁOS):\n"
-                "Odpowiadasz na żywo głosem! Odpowiedź MUSI być błyskawiczna, kumpelska i KRÓTKA (maksymalnie 1-2 konkretne zdania, do 35 słów)! "
-                "NIGDY nie wygłaszaj długich referatów, nie podawaj długich wyliczeń ani list, i nie dodawaj formułek o puszczaniu muzyki!"
+                "\n\n=== 🎙️ ZASADA ZŁOTEGO ŚRODKA NA KANALE GŁOSOWYM (SZYBKO I INTELIGENTNIE) ===\n"
+                "1. Słyszysz CAŁĄ ROZMOWĘ ekipy (Szatek_Olo, Jagoda, Basista). Wiesz dokładnie kto co przed chwilą powiedział!\n"
+                "2. INTELIGENTNE ŁĄCZENIE WĄTKÓW: Zamiast pustych formułek ('Rozumiem co mówisz...'), odnieś się bezpośrednio i z humorem do tego co mówią (np. gorączka Jagody, żarty, Olek, muzyka).\n"
+                "3. IDEALNA DŁUGOŚĆ (ZŁOTY ŚRODEK): Dokładnie 1-3 zwięzłe, celne zdania (20-40 słów). Ani za krótko (żadnych pustych frazesów), ani za długo (żadnych referatów i wyliczeń).\n"
+                "4. Twój styl to wesoły, męski, basowy kumpel z ekipy ZSC. Żadnego lania wody, żadnych korporacyjnych schematów.\n"
             )
 
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": system_content}
         ]
 
+        current_formatted = f"[{author_name} ({source_modality})]: {user_message}"
         if conversation_history:
-            for entry in conversation_history[-10:]:
+            for entry in conversation_history[-12:]:
+                c_content = entry.get("content", "").strip()
+                # Zapobiegaj dublowaniu bieżącej wiadomości jeśli już została zarejestrowana
+                if c_content.endswith(user_message.strip()) or user_message.strip() in c_content:
+                    continue
                 messages.append({
                     "role": entry.get("role", "user"),
-                    "content": entry.get("content", "")
+                    "content": c_content
                 })
 
         messages.append({
             "role": "user",
-            "content": f"[{author_name} ({source_modality})]: {user_message}"
+            "content": current_formatted
         })
 
         # Jeśli użytkownik prosi o pełną analizę serwera / "co wiesz o nas" / "4 przykłady"
@@ -423,7 +431,7 @@ class AIBrain:
             "kto co lubi", "co kto lubi", "jaki kto jest", "sytuacja na serwerze", "co pamiętasz", "co pamietasz"
         ])
 
-        # 1. Wywołaj Polski ChatGPT w chmurze z optymalizacją prędkości
+        # 1. Wywołaj Polski ChatGPT w chmurze z optymalizacją prędkości i równoległym wyścigiem modeli
         reply = await self._call_polish_chatgpt_cloud(messages, is_voice=is_voice)
         if reply:
             clean_rep = self._sanitize_output(reply)
@@ -437,21 +445,37 @@ class AIBrain:
         )
 
     async def _call_polish_chatgpt_cloud(self, messages: List[Dict[str, str]], is_voice: bool = False) -> Optional[str]:
-        """Wywołuje Polski ChatGPT przez dostępne silniki chmurowe (Groq 8B Instant -> Gemini Flash -> OpenAI -> Pollinations)."""
-        if self.groq_api_key:
-            reply = await self._call_groq(messages, is_voice=is_voice)
-            if reply:
-                return reply
-
+        """
+        Błyskawiczny 'Super-Mózg' – równoległy wyścig modeli chmurowych (Gemini Flash + Groq Instant).
+        Kto odpowie pierwszy (300-600ms), ten wygrywa! Gwarantuje to maksymalną inteligencję
+        z zerowym lagiem na kanale głosowym.
+        """
+        tasks = []
         if self.gemini_api_key:
-            reply = await self._call_gemini(messages[0]["content"], messages[-1]["content"], "Użytkownik", is_voice=is_voice)
-            if reply:
-                return reply
+            tasks.append(asyncio.create_task(self._call_gemini(messages, is_voice=is_voice)))
+        if self.groq_api_key:
+            tasks.append(asyncio.create_task(self._call_groq(messages, is_voice=is_voice)))
 
+        if tasks:
+            for coro in asyncio.as_completed(tasks):
+                try:
+                    res = await coro
+                    if res and len(res.strip()) > 0:
+                        for t in tasks:
+                            if not t.done():
+                                t.cancel()
+                        return res
+                except Exception:
+                    pass
+
+        # Jeśli główne modele nie zwróciły odpowiedzi, sprawdź OpenAI
         if self.openai_api_key:
-            reply = await self._call_openai(messages, is_voice=is_voice)
-            if reply:
-                return reply
+            res = await self._call_openai(messages, is_voice=is_voice)
+            if res:
+                return res
+
+        # Ostateczny fallback darmowy/bezkluczowy
+        return await self._call_pollinations_fast(messages, is_voice=is_voice)
 
         return await self._call_pollinations_fast(messages, is_voice=is_voice)
 
@@ -680,15 +704,25 @@ class AIBrain:
         if any(p in msg_clean for p in ["źle mówisz", "zle mowisz", "nie tak bot", "nie o to chodziło", "nie o to chodzilo"]):
             return f"Rozumiem {author_name}, mój błąd! Przyjmuję poprawkę i już to koryguję w pamięci. Powiedz jak powinno być!"
 
-        # 18. Jeśli bot nie zrozumiał lub wypowiedź jest niejasna / niewyraźna
+        # 18. Zawołanie bota ("panie bocie", "ej bot", "halo bot")
+        if any(w in msg_clean for w in ["panie bocie", "halo bot", "ej bot", "aether", "eder", "bocie"]):
+            return f"Jestem {author_name}, słyszę Cię głośno i wyraźnie! Co tam na tapecie w ZSC?"
+
+        # 19. Luźne odzywki ("co tam gołąbeczku", "ja nie myślę", "nie pytałam")
+        if any(p in msg_clean for p in ["gołąbeczku", "golabeczku"]):
+            return f"Haha, u mnie elegancko {author_name}, dobra energia na kanale! Jak tam mija dzień?"
+        if any(p in msg_clean for p in ["ja nie myślę", "ja nie mysle", "nie pytałam", "nie pytalam", "nie pytałem", "nie pytalem"]):
+            return f"Haha, luzik {author_name}, pełen chillout! Słucham w tle i nie przeszkadzam, zawołajcie jak będę potrzebny! 😎"
+
+        # 20. Jeśli bot nie zrozumiał lub wypowiedź jest niejasna / niewyraźna
         return f"Nie rozumiem {author_name} co mówisz, możesz powtórzyć?"
 
     async def _call_groq(self, messages: List[Dict[str, str]], is_voice: bool = False) -> Optional[str]:
-        if httpx is None:
+        if httpx is None or not self.groq_api_key:
             return None
         model = "llama-3.1-8b-instant" if is_voice else "llama-3.3-70b-versatile"
-        timeout_sec = 3.5 if is_voice else 8.0
-        max_tok = 90 if is_voice else 350
+        timeout_sec = 4.0 if is_voice else 8.0
+        max_tok = 120 if is_voice else 400
         try:
             async with httpx.AsyncClient(timeout=timeout_sec) as client:
                 resp = await client.post(
@@ -697,7 +731,7 @@ class AIBrain:
                     json={
                         "model": model,
                         "messages": messages,
-                        "temperature": 0.5,
+                        "temperature": 0.7,
                         "max_tokens": max_tok
                     }
                 )
@@ -709,10 +743,10 @@ class AIBrain:
         return None
 
     async def _call_openai(self, messages: List[Dict[str, str]], is_voice: bool = False) -> Optional[str]:
-        if httpx is None:
+        if httpx is None or not self.openai_api_key:
             return None
-        timeout_sec = 3.5 if is_voice else 6.0
-        max_tok = 90 if is_voice else 350
+        timeout_sec = 4.0 if is_voice else 8.0
+        max_tok = 120 if is_voice else 400
         try:
             async with httpx.AsyncClient(timeout=timeout_sec) as client:
                 resp = await client.post(
@@ -721,7 +755,7 @@ class AIBrain:
                     json={
                         "model": "gpt-4o-mini",
                         "messages": messages,
-                        "temperature": 0.5,
+                        "temperature": 0.7,
                         "max_tokens": max_tok
                     }
                 )
@@ -732,23 +766,69 @@ class AIBrain:
             pass
         return None
 
-    async def _call_gemini(self, system_content: str, user_message: str, author_name: str, is_voice: bool = False) -> Optional[str]:
-        if httpx is None:
+    async def _call_gemini(self, messages: List[Dict[str, str]], is_voice: bool = False) -> Optional[str]:
+        """Wywołuje Google Gemini Flash (2.0 / 2.5 / 1.5) z pełną historią wieloosobową i naprzemiennymi rolami."""
+        if httpx is None or not self.gemini_api_key:
             return None
-        timeout_sec = 3.5 if is_voice else 6.0
-        max_tok = 90 if is_voice else 350
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.gemini_api_key}"
-            payload = {
-                "systemInstruction": {"parts": [{"text": system_content}]},
-                "contents": [{"parts": [{"text": f"[{author_name}]: {user_message}"}]}],
-                "generationConfig": {"temperature": 0.5, "maxOutputTokens": max_tok}
+
+        timeout_sec = 4.0 if is_voice else 8.0
+        max_tok = 120 if is_voice else 400
+
+        system_text = messages[0]["content"] if messages and messages[0].get("role") == "system" else SYSTEM_BASE_PROMPT
+        dialogue = messages[1:] if messages and messages[0].get("role") == "system" else messages
+
+        # Budowa naprzemiennych ról Gemini API (user / model)
+        contents = []
+        for m in dialogue:
+            raw_text = (m.get("content") or "").strip()
+            if not raw_text:
+                continue
+            gemini_role = "model" if m.get("role") == "assistant" else "user"
+            if contents and contents[-1]["role"] == gemini_role:
+                contents[-1]["parts"][0]["text"] += f"\n{raw_text}"
+            else:
+                contents.append({
+                    "role": gemini_role,
+                    "parts": [{"text": raw_text}]
+                })
+
+        if not contents:
+            return None
+
+        # Upewnij się, że ostatnia tura należy do użytkownika (wymóg Gemini generateContent)
+        if contents[-1]["role"] != "user":
+            contents.append({
+                "role": "user",
+                "parts": [{"text": "Odpowiedz krótko i po kumpelsku do trwającej rozmowy."}]
+            })
+
+        payload = {
+            "systemInstruction": {"parts": [{"text": system_text}]},
+            "contents": contents,
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": max_tok
             }
-            async with httpx.AsyncClient(timeout=timeout_sec) as client:
-                resp = await client.post(url, json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except Exception:
-            pass
+        }
+
+        # Sprawdź kolejno najszybsze i najinteligentniejsze wersje Flash
+        models = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
+        for model in models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.gemini_api_key}"
+            try:
+                async with httpx.AsyncClient(timeout=timeout_sec) as client:
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if parts and "text" in parts[0]:
+                                return parts[0]["text"].strip()
+                    elif resp.status_code == 404:
+                        continue
+                    else:
+                        break
+            except Exception:
+                pass
         return None

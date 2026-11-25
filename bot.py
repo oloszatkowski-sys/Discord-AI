@@ -45,13 +45,14 @@ ai_brain = AIBrain()
 
 class ConversationTracker:
     """Śledzi ostatnie wiadomości na kanale, aby model rozumiał pełny kontekst dyskusji."""
-    def __init__(self, max_history: int = 15):
+    def __init__(self, max_history: int = 25):
+        self.max_history = max_history
         self.channels: Dict[int, deque] = {}
         self.last_bot_reply: Dict[int, float] = {}
 
     def add_message(self, channel_id: int, author_name: str, content: str, is_bot: bool):
         if channel_id not in self.channels:
-            self.channels[channel_id] = deque(maxlen=15)
+            self.channels[channel_id] = deque(maxlen=self.max_history)
         role = "assistant" if is_bot else "user"
         formatted_content = content if is_bot else f"[{author_name}]: {content}"
         self.channels[channel_id].append({"role": role, "content": formatted_content})
