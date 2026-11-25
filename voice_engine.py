@@ -166,8 +166,25 @@ class DiscordVoiceEngine:
         # Bufory audio per użytkownik: user_id -> {"member": member, "chunks": [bytes], "last_ts": float, "start_ts": float}
         self._user_audio_buffers: Dict[int, Dict[str, Any]] = {}
         self._is_playing_music: bool = False
+        # Domyślna głośność muzyki ustawiona ciszej (25% = 0.25), regulowana w locie!
+        self.music_volume: float = 0.25
+        self._active_music_source: Optional[discord.PCMVolumeTransformer] = None
 
         os.makedirs(TEMP_AUDIO_DIR, exist_ok=True)
+
+    def set_music_volume(self, volume_pct: int) -> int:
+        """Ustawia głośność muzyki w skali 1-100% (działa w czasie rzeczywistym na grającym utworze!)."""
+        clamped = max(2, min(100, int(volume_pct)))
+        self.music_volume = clamped / 100.0
+        if self._active_music_source is not None:
+            self._active_music_source.volume = self.music_volume
+        print(f"[VOICE_MUSIC] 🔉 Ustawiono głośność muzyki na: {clamped}%")
+        return clamped
+
+    def adjust_music_volume(self, delta_pct: int) -> int:
+        """Zmniejsza lub zwiększa głośność muzyki o podany procent (np. -10% lub +15%)."""
+        current_pct = int(round(self.music_volume * 100))
+        return self.set_music_volume(current_pct + delta_pct)
 
     def set_voice_command_callback(self, callback: Callable[[discord.Member, str], Awaitable[None]]):
         """Rejestruje funkcję obsługującą rozpoznaną mowę użytkownika na kanale głosowym."""
@@ -523,7 +540,7 @@ class DiscordVoiceEngine:
                         "-ar", "48000",
                         "-ac", "2",
                         "-c:a", "pcm_s16le",
-                        "-af", "volume=0.82",
+                        "-af", "volume=0.70",
                         wav_path
                     ]
                     proc = await asyncio.create_subprocess_exec(
@@ -535,14 +552,17 @@ class DiscordVoiceEngine:
 
                     if os.path.exists(wav_path) and self.voice_client and self.voice_client.is_connected():
                         self._is_playing_music = True
-                        source = discord.FFmpegPCMAudio(wav_path)
-                        self.voice_client.play(source)
+                        raw_source = discord.FFmpegPCMAudio(wav_path)
+                        vol_source = discord.PCMVolumeTransformer(raw_source, volume=self.music_volume)
+                        self._active_music_source = vol_source
+                        self.voice_client.play(vol_source)
                         await asyncio.sleep(0.2)
                         elapsed = 0.0
                         while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing() and elapsed < (play_dur + 5.0):
                             await asyncio.sleep(0.2)
                             elapsed += 0.2
                         self._is_playing_music = False
+                        self._active_music_source = None
                         print(f"[VOICE_MUSIC] ✅ Zakończono odtwarzanie utworu '{track_title}' ({elapsed:.1f}s).")
 
                         if duration_sec:

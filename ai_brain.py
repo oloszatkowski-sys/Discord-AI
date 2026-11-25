@@ -131,6 +131,22 @@ class AIBrain:
         if duration_sec is None and any(k in t_clean for k in ["do przetestowania", "na próbę", "na probe", "przetestuj czy to ta", "sprawdź czy to ta"]):
             duration_sec = 10
 
+        # A0. REGULACJA GŁOŚNOŚCI MUZYKI ("ścisz", "ciszej", "zrób ciszej", "zmniejsz głośność", "głośność 15%")
+        if any(p in t_clean for p in [
+            "ścisz", "scisz", "ciszej", "zrób ciszej", "zrob ciszej", "zmniejsz głośność", "zmniejsz glosnosc",
+            "za głośno", "za glosno", "trochę ciszej", "troche ciszej", "przycisz",
+            "podgłośnij", "podglosnij", "głośniej", "glosniej", "zrób głośniej", "zrob glosniej",
+            "zwiększ głośność", "zwieksz glosnosc", "ustaw głośność", "ustaw glosnosc", "głośność na", "glosnosc na"
+        ]):
+            vol_num = re.search(r"(\d{1,3})\s*%?", t_clean)
+            explicit_pct = int(vol_num.group(1)) if vol_num else None
+            is_down = any(k in t_clean for k in ["ścisz", "scisz", "ciszej", "zmniejsz", "za głośno", "za glosno", "przycisz"])
+            return {
+                "action": "VOLUME_CHANGE",
+                "explicit_pct": explicit_pct,
+                "delta_pct": -10 if is_down else 12
+            }
+
         # A. ZATRZYMANIE MUZYKI
         if any(p in t_clean for p in ["wyłącz muzykę", "wylacz muzyke", "zatrzymaj muzykę", "zatrzymaj piosenkę", "stop muzyka", "przestań śpiewać", "przestan spiewac", "to nie ta piosenka"]):
             return {

@@ -237,6 +237,17 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             if voice_engine.is_connected():
                 await voice_engine.enqueue_speech(reply)
 
+        if act == "VOLUME_CHANGE":
+            explicit_pct = music_action.get("explicit_pct")
+            delta_pct = music_action.get("delta_pct", -10)
+            if explicit_pct is not None:
+                new_vol = voice_engine.set_music_volume(explicit_pct)
+            else:
+                new_vol = voice_engine.adjust_music_volume(delta_pct)
+            await channel.send(f"🔉 Ustawiłem głośność muzyki na **{new_vol}%**!")
+            await send_via_music_webhook(channel, f"m!volume {new_vol}", author_name)
+            return
+
         if act == "STOP_MUSIC":
             voice_engine.stop_audio()
             if jockie_cmd:
@@ -685,7 +696,29 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         memory_ctx = memory_vault.build_context_for_prompt(author_name, f"puść {song_query} na {duration_sec} sekund", guild_id, guild_name)
         music_intent = await ai_brain.analyze_music_intent(ctx.channel.id, author_name, f"puść {song_query} na {duration_sec} sekund", memory_ctx)
         if music_intent:
-            await execute_music_action(ctx.channel, music_intent)
+            await execute_music_action(ctx.channel, music_intent, author_name)
+
+    @bot.command(name="ciszej", aliases=["scisz", "ścisz", "przycisz"])
+    async def cmd_quieter(ctx: commands.Context, step: int = 10):
+        """Ścisza aktualnie grający utwór (domyślnie o 10%)."""
+        new_vol = voice_engine.adjust_music_volume(-abs(step))
+        await ctx.send(f"🔉 Ściszyłem muzykę do **{new_vol}%**!")
+
+    @bot.command(name="glosniej", aliases=["głośniej", "podglosnij", "podgłośnij"])
+    async def cmd_louder(ctx: commands.Context, step: int = 12):
+        """Podgłaśnia aktualnie grający utwór (domyślnie o 12%)."""
+        new_vol = voice_engine.adjust_music_volume(abs(step))
+        await ctx.send(f"🔊 Podgłośniłem muzykę do **{new_vol}%**!")
+
+    @bot.command(name="glosnosc", aliases=["głośność", "vol", "volume"])
+    async def cmd_volume(ctx: commands.Context, vol_pct: Optional[int] = None):
+        """Ustawia lub wyświetla głośność muzyki (1-100%, domyślnie 25%)."""
+        if vol_pct is None:
+            curr = int(round(voice_engine.music_volume * 100))
+            await ctx.send(f"🔉 Aktualna głośność muzyki to **{curr}%** (domyślnie `25%`). Użyj np. `!glosnosc 15` lub `!ciszej`.")
+            return
+        new_vol = voice_engine.set_music_volume(vol_pct)
+        await ctx.send(f"🔉 Ustawiono głośność muzyki na **{new_vol}%**!")
 
     @bot.command(name="status")
     async def cmd_status(ctx: commands.Context):
