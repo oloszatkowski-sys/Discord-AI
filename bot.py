@@ -36,7 +36,7 @@ load_dotenv()
 DISCORD_TOKEN = (os.getenv("DISCORD_TOKEN") or os.getenv("MANUAL_DISCORD_TOKEN") or "").strip()
 TARGET_VOICE_CHANNEL_ID = 1574154874495705108  # Dokładne ID kanału 🤖・Testowanie・Bota・AI
 TARGET_VOICE_NAME = "testowanie bota ai"
-AUTO_JOIN_VOICE = os.getenv("AUTO_JOIN_VOICE", "true").lower() in ("true", "1", "yes")
+AUTO_JOIN_VOICE = os.getenv("AUTO_JOIN_VOICE", "false").lower() in ("true", "1", "yes")
 
 memory_vault = MemoryVault()
 voice_engine = DiscordVoiceEngine(voice_name=os.getenv("TTS_VOICE", DEFAULT_WARM_VOICE))
@@ -181,10 +181,14 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             target_vc = after.channel
             print(f"[VOICE_EVENT] Użytkownik {member.display_name} wszedł na kanał '{target_vc.name}'.")
 
-            # Przejdź natychmiast na kanał, w którym jest gracz
-            connected = await voice_engine.connect(target_vc)
-            if connected:
-                # Odróżnij użytkownika i powitaj go po imieniu ciepłym głosem!
+            # Powitaj gracza TYLKO wtedy, gdy bot JUŻ JEST na tym kanale!
+            # Bot NIGDY nie dołącza samowolnie – wchodzi tylko na zaproszenie ('choc na vc', '!dolacz', 'wbij na vc')
+            if (
+                voice_engine.is_connected()
+                and voice_engine.voice_client
+                and voice_engine.voice_client.channel
+                and voice_engine.voice_client.channel.id == target_vc.id
+            ):
                 greeting = format_user_greeting(member)
                 print(f"[VOICE_GREETING] Mówię do {member.display_name}: {greeting}")
                 await voice_engine.enqueue_speech(greeting)
@@ -361,15 +365,7 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
     voice_engine.set_voice_command_callback(handle_voice_input)
 
     async def speak_on_vc(message: discord.Message, text_to_speak: str):
-        """Gwarantuje połączenie z kanałem głosowym rozmówcy i odtwarza mowę na żywo."""
-        if not voice_engine.is_connected() and message.guild:
-            target = (
-                message.author.voice.channel
-                if (hasattr(message.author, "voice") and message.author.voice and message.author.voice.channel)
-                else find_best_voice_channel(message.guild)
-            )
-            if target:
-                await voice_engine.connect(target)
+        """Odtwarza mowę na żywo TYLKO jeśli bot jest już połączony z kanałem głosowym."""
         if voice_engine.is_connected():
             await voice_engine.enqueue_speech(text_to_speak)
             try:
@@ -480,13 +476,8 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         music_intent = await ai_brain.analyze_music_intent(message.channel.id, author_name, content, memory_ctx)
         if music_intent:
             if not voice_engine.is_connected() and message.guild:
-                target = (
-                    message.author.voice.channel
-                    if (hasattr(message.author, "voice") and message.author.voice and message.author.voice.channel)
-                    else find_best_voice_channel(message.guild)
-                )
-                if target:
-                    await voice_engine.connect(target)
+                if hasattr(message.author, "voice") and message.author.voice and message.author.voice.channel:
+                    await voice_engine.connect(message.author.voice.channel)
             await execute_music_action(message.channel, music_intent)
             return
 

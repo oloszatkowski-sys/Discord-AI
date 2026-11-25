@@ -72,7 +72,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           VOICE_CHANNEL_NAME: ${{ inputs.voice_channel_name || secrets.VOICE_CHANNEL_NAME || 'proceed' }}
-          AUTO_JOIN_VOICE: "true"
+          AUTO_JOIN_VOICE: "false"
         run: |
           # Uruchom bota
           python bot.py

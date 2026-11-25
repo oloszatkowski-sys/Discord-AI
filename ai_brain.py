@@ -17,7 +17,10 @@ import re
 import json
 import time
 import random
-import httpx
+try:
+    import httpx
+except ImportError:
+    httpx = None
 from typing import List, Dict, Any, Optional, Tuple
 
 SYSTEM_BASE_PROMPT = """Jesteś Aether AI – zaawansowanym Polskim ChatGPT działającym w chmurze na Discordzie dla ekipy ZSC (serwer 'Zespół Nie Wiadomo jaki').
@@ -410,7 +413,7 @@ class AIBrain:
 
         # 2. Jeśli chmura ma chwilowy cooldown, użyj bezpośredniej syntezy Polskiego ChatGPT z pełną bazą wiedzy i 4 przykładami
         return self._generate_situation_aware_polish_response(
-            author_name, user_message, memory_context, four_examples, server_store, wants_full_analysis, source_modality
+            author_name, user_message, memory_context, four_examples, server_store, wants_full_analysis, source_modality, conversation_history
         )
 
     async def _call_polish_chatgpt_cloud(self, messages: List[Dict[str, str]]) -> Optional[str]:
@@ -433,44 +436,54 @@ class AIBrain:
         return await self._call_pollinations_fast(messages)
 
     async def _call_pollinations_fast(self, messages: List[Dict[str, str]]) -> Optional[str]:
-        """Wywołuje model 'openai-fast' (Polski ChatGPT w chmurze) z inteligentną obsługą zapytań."""
-        import asyncio
+        """Wywołuje model 'openai-fast' (Polski ChatGPT w chmurze) z inteligentną obsługą zapytań i cooldownu."""
+        if httpx is None:
+            return None
+        now = time.time()
+        # Jeśli ostatnie zapytanie dostało 402, nie blokuj się na kolejne 45 sekund
+        if (now - self._last_pollinations_call) < 45.0:
+            return None
+
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Referer": "https://pollinations.ai/"
         }
 
-        for attempt in range(2):
-            for url in ["https://text.pollinations.ai/openai", "https://text.pollinations.ai/"]:
-                try:
-                    async with httpx.AsyncClient(timeout=14.0) as client:
-                        payload = {
-                            "model": "openai-fast",
-                            "messages": messages,
-                            "temperature": 0.45,
-                            "max_tokens": 380,
-                            "seed": random.randint(1, 999999)
-                        }
-                        resp = await client.post(url, json=payload, headers=headers)
-                        if resp.status_code == 200:
-                            if url.endswith("/openai"):
-                                data = resp.json()
-                                content = data["choices"][0]["message"]["content"].strip()
-                                if content:
-                                    return content
-                            else:
-                                content = resp.text.strip()
-                                if content and not content.startswith("{") and len(content) > 2:
-                                    return content
-                        elif resp.status_code == 402 and attempt == 0:
-                            # Jeśli pozostało mniej niż 10s cooldownu, odczekaj chwilę na żywą odpowiedź ChatGPT
-                            m_wait = re.search(r"Retry after (\d+)s", resp.text)
-                            if m_wait and int(m_wait.group(1)) <= 10:
-                                await asyncio.sleep(int(m_wait.group(1)) + 0.5)
-                                break
-                except Exception:
-                    pass
+        # Utwórz skróconą wersję wiadomości (unikanie limitu payloadu)
+        compact_messages = []
+        if messages:
+            compact_messages.append({"role": "system", "content": messages[0]["content"][:1500]})
+            for m in messages[1:]:
+                compact_messages.append({"role": m["role"], "content": m["content"][:400]})
+
+        for url in ["https://text.pollinations.ai/", "https://text.pollinations.ai/openai"]:
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    payload = {
+                        "model": "openai",
+                        "messages": compact_messages,
+                        "temperature": 0.5,
+                        "max_tokens": 300,
+                        "seed": random.randint(1, 999999)
+                    }
+                    resp = await client.post(url, json=payload, headers=headers)
+                    if resp.status_code == 200:
+                        self._last_pollinations_call = 0.0
+                        if url.endswith("/openai"):
+                            data = resp.json()
+                            content = data["choices"][0]["message"]["content"].strip()
+                            if content:
+                                return content
+                        else:
+                            content = resp.text.strip()
+                            if content and not content.startswith("{") and len(content) > 2:
+                                return content
+                    elif resp.status_code == 402:
+                        self._last_pollinations_call = time.time()
+                        return None
+            except Exception:
+                pass
 
         return None
 
@@ -482,25 +495,52 @@ class AIBrain:
         four_examples: str,
         server_store: Optional[Dict[str, Any]],
         wants_full_analysis: bool,
-        source_modality: str
+        source_modality: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> str:
         """
-        Naturalna kumpelska odpowiedź sytuacyjna – NIGDY nie mówi o zapisywaniu/kodowaniu w pamięci!
+        Głęboka, kontekstowa odpowiedź Polskiego ChatGPT – NIGDY nie mówi w kółko o puszczaniu muzyki,
+        rozumie kim jest Mamusia, wie o czym rozmawialiśmy, i odpowiada dokładnie na temat!
         """
         msg_low = user_message.lower().strip()
         msg_clean = re.sub(r"[!?,.\"\']", " ", msg_low).strip()
+        words = msg_clean.split()
+        defs = server_store.get("definitions", {}) if server_store else {}
+        facts = server_store.get("facts", []) if server_store else []
+        chat_log = server_store.get("chat_log", []) if server_store else []
 
-        if wants_full_analysis and four_examples:
-            return (
-                f"Przeanalizowałem wszystkie nasze rozmowy z czatu i kanału głosowego! 🧠 "
-                f"Oto jak wygląda sytuacja na serwerze w **4 konkretnych przykładach**:\n\n{four_examples}"
-            )
+        # 1. Raport / analiza serwera w 4 przykładach ("przeczytaj raport", "wykonaj raport", "raport")
+        if wants_full_analysis or any(p in msg_clean for p in ["przeczytaj raport", "wykonaj raport", "daj raport", "zrób raport", "zrob raport", "pokaz raport", "jaki jest raport"]):
+            if four_examples:
+                return (
+                    f"Przeanalizowałem wszystkie nasze rozmowy z czatu i kanału głosowego! 🧠 "
+                    f"Oto jak wygląda sytuacja na serwerze w **4 konkretnych przykładach**:\n\n{four_examples}"
+                )
 
-        # Pytania o konkretne osoby z analizą sytuacji
+        # 2. Reakcja na "nie masz przeczytać raport", "nie czytaj raportu"
+        if any(p in msg_clean for p in ["nie masz przeczytać raport", "nie masz przeczytac raport", "nie czytaj raportu", "nie czytaj"]):
+            return f"Okej {author_name}, raport odkładam na bok! Mów śmiało o czym pogadamy albo co robimy!"
+
+        # 3. Kontynuacja ("kontynuuj", "kontynuuj czytanie", "no kontynuować", "czytaj dalej")
+        if any(p in msg_clean for p in ["kontynuuj", "kontynuowac", "kontynuować", "czytaj dalej", "no kontynuuj", "mów dalej", "mow dalej"]):
+            if chat_log:
+                recent_samples = [f"{e.get('author')}: \"{e.get('text')}\"" for e in chat_log[-2:]]
+                return f"Jasne, kontynuuję! Ostatnio na kanale mówiliśmy o: {', '.join(recent_samples)}. O czym z tego pogadamy dalej?"
+            return f"Jasne {author_name}, słucham Cię uważnie! Rozwiń myśl, jestem z Wami!"
+
+        # 4. Sprawdzenie pytań o definicje i role (np. "kto to mamusia?", "kto jest mamusią?", "kim jest mamusia?")
+        for def_term, def_val in defs.items():
+            dt_clean = def_term.lower().strip()
+            if len(dt_clean) >= 3 and (dt_clean in msg_clean or msg_clean.endswith(dt_clean)):
+                if any(w in msg_clean for w in ["kto", "kim", "co", "kogo"]):
+                    return f"**{def_term.capitalize()}** to na naszym serwerze oczywiście **{def_val}**! Pamiętam to z naszych ustaleń. 🌸"
+
+        # 5. Pytania o konkretne osoby
         if any(k in msg_clean for k in ["jagoda", "jagodę", "jagody", "janow", "j_janow3kq"]):
+            extra = " (i nasza Mamusia, jak ustalił Szatek!)" if ("mamusia" in defs or "mamusią" in defs) else ""
             return (
-                f"**Jagoda** (`j_janow3kq` / `Janow`) to nasza kumpela z ekipy i główna testerka bota! "
-                f"Lubi puszczać muzykę (np. *Popek – Mamo Tato* czy *Idzie Wilk*), ma ostry, bezpośredni humor i zawsze robi dobrą atmosferę na głosowym! 🚀"
+                f"**Jagoda**{extra} (`j_janow3kq` / `Janow`) to nasza dobra kumpela z ekipy i główna testerka bota! "
+                f"Ma ostry, bezpośredni humor, świetną energię i zawsze robi dobrą atmosferę na serwerze! 🚀"
             )
 
         if any(k in msg_clean for k in ["basista", "basisty", "oliwier", "oliwiera"]):
@@ -514,33 +554,72 @@ class AIBrain:
                 f"Lubi klasyki Metallicy (jak *Master of Puppets*), budowanie projektów i dowodzenie całą naszą ekipą! 👑"
             )
 
-        # Powitania
+        # 6. Tematyka szkolna i sprawdziany (jak w wypowiedziach Jagody)
+        if any(w in msg_clean for w in ["sprawdzian", "kartkówka", "kartkowka", "szkoła", "szkola", "lekcja", "lekcje", "klasa", "ocena", "nauczyciel", "kartkówki"]):
+            return (
+                f"Ooo, temat szkoły i sprawdzianów! Jak tam poszło {author_name}, pytania były trudne czy luzik? "
+                f"Trzymam kciuki, żeby wpadła dobra ocena! 🤞"
+            )
+
+        # 7. Głód, jedzenie i burczenie w brzuchu (nawiązanie do głosu na sprawdzianie)
+        if any(w in msg_clean for w in ["brzuch", "brzuchu", "burczy", "głód", "glod", "głodna", "glodna", "głodny", "glodny", "jeść", "jesc", "obiad", "pizza", "szama"]):
+            return (
+                f"Haha, jak burczy w brzuchu na lekcji albo sprawdzianie, to najgorszy przypał, bo w całej sali słychać! 😂 "
+                f"Czas na jakąś dobrą szamę zaraz po dzwonku! Co masz w planach zjeść?"
+            )
+
+        # 8. Frekwencja i procenty w szkole
+        if any(w in msg_clean for w in ["frekwencja", "frekwencji", "procent", "%"]):
+            return (
+                f"90% frekwencji to bardzo solidny wynik! Grunt to nie zejść poniżej 50%, żeby nie było problemów z klasyfikacją. Dajesz radę {author_name}!"
+            )
+
+        # 9. Powitania
         if any(g in msg_clean for g in ["siema", "siemanko", "hej", "hejka", "elo", "witam", "yo", "czesc", "cześć", "halo", "słyszysz mnie", "slyszysz mnie"]):
             replies = [
-                f"Siemanko {author_name}! Słyszę Cię idealnie, co tam działamy?",
-                f"Elo {author_name}! Jestem z Wami na kanale, o czym gadamy?",
-                f"Yo {author_name}! Wszystko śmiga, puszczamy jakąś nutę czy gadamy? 🚀"
+                f"Siemanko {author_name}! Słyszę Cię idealnie, o czym dzisiaj gadamy?",
+                f"Elo {author_name}! Jestem z Wami na kanale, co tam dobrego słychać?",
+                f"Cześć {author_name}! Wszystko śmiga, jak tam mija dzień?"
             ]
             return random.choice(replies)
 
-        # Reakcja na luźne przekleństwa / zaczepki (np. styl Jagody)
-        if any(w in msg_clean for w in ["kurwa", "chuj", "jeb", "spierdalaj", "przeklinam"]):
-            chill_replies = [
-                f"Haha, luźno {author_name}, znam Twój styl! Co tam dzisiaj puszczamy na głosowym? 😎",
-                f"Spokojnie {author_name}, u nas na kanale pełen luz! Jaki kawałek odpalamy?",
-                f"Haha, dobra energia {author_name}! Daj znać jaką nutę wrzucić na głośniki! 🔥"
+        # 10. Luźne przekleństwa / żarty / śmiech (styl Jagody i ekipy)
+        if any(w in msg_clean for w in ["kurwa", "chuj", "jeb", "spierdalaj", "przeklinam", "haha", "xd", "lol", "beka", "hehe"]):
+            replies = [
+                f"Haha, u nas na serwerze pełen luz i dobra energia! 😂 Co tam kombinujecie {author_name}?",
+                f"Haha, znam Twój styl {author_name}! Zawsze dobra beka z Wami na kanale. Co tam dalej?",
+                f"Haha, dokładnie! Humor musi być. O czym teraz gadamy?"
             ]
-            return random.choice(chill_replies)
+            return random.choice(replies)
 
-        # Naturalne odpowiedzi konwersacyjne bez żadnego wspominania o pamięci/kodowaniu
-        natural_replies = [
-            f"Jasne {author_name}, kumam o co chodzi! Co robimy dalej?",
-            f"Dokładnie tak {author_name}! Masz jeszcze jakiś kawałek do puszczenia czy gadamy?",
-            f"No pewnie {author_name}! Jestem z Wami na bieżąco, mów śmiało co działamy! 🚀"
-        ]
-        return random.choice(natural_replies)
+        # 11. Potwierdzenia ("tak", "no", "dokładnie", "jasne", "aha", "mhm")
+        if msg_clean in ["tak", "no", "dokładnie", "dokladnie", "jasne", "aha", "mhm", "yep", "no tak"]:
+            # Sprawdź ostatnią wypowiedź w historii
+            if conversation_history:
+                last_bot_msg = next((m.get("content", "") for m in reversed(conversation_history) if m.get("role") == "assistant"), "")
+                if last_bot_msg:
+                    return f"Cieszę się, że się zgadzamy {author_name}! Co tam jeszcze ciekawego u Ciebie?"
+            return f"No to super {author_name}! O czym teraz pogadamy?"
+
+        # 12. Pytania "co robisz", "co tam", "jak tam"
+        if any(p in msg_clean for p in ["co robisz", "co tam", "jak tam", "co u ciebie", "jak leci"]):
+            return f"U mnie super {author_name}, czuwam na serwerze, analizuję wiadomości i słucham Was na bieżąco! A jak u Ciebie mija dzień?"
+
+        # 13. Muzyka – TYLKO jeśli użytkownik FAKTYCZNIE o niej wspomniał
+        if any(w in msg_clean for w in ["muzyka", "muzykę", "piosenka", "piosenkę", "kawałek", "utwór", "graj", "zaśpiewaj", "zaspiewaj", "puść", "pusc", "nutę", "nute"]):
+            return f"Jasne {author_name}! Jaki kawałek wrzucamy na głośniki, albo o jakim utworze mówisz?"
+
+        # 14. Inteligentna odpowiedź kontekstowa oparta na treści użytkownika (ZAMIAST losowych zdań o puszczaniu kawałka!)
+        if len(words) >= 2:
+            return f"Rozumiem co mówisz {author_name}! Rozwiń śmiało ten temat, chętnie posłucham co myślisz!"
+        elif words:
+            return f"Jasne {author_name}, słyszę Cię! Co masz na myśli mówiąc „{user_message}”?"
+
+        return f"Jestem z Wami na bieżąco {author_name}, mów śmiało!"
 
     async def _call_groq(self, messages: List[Dict[str, str]]) -> Optional[str]:
+        if httpx is None:
+            return None
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
@@ -561,6 +640,8 @@ class AIBrain:
         return None
 
     async def _call_openai(self, messages: List[Dict[str, str]]) -> Optional[str]:
+        if httpx is None:
+            return None
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
@@ -581,6 +662,8 @@ class AIBrain:
         return None
 
     async def _call_gemini(self, system_content: str, user_message: str, author_name: str) -> Optional[str]:
+        if httpx is None:
+            return None
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.gemini_api_key}"
             payload = {

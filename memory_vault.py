@@ -450,52 +450,99 @@ class MemoryVault:
             "zapamiętaj, że", "zapamietaj, ze", "zapamiętaj że", "zapamietaj ze",
             "zapamiętaj:", "zapamietaj:", "pamiętaj:", "pamietaj:", "zapisz:", "naucz się:"
         ]
+        parsed_fact = None
         for prefix in trigger_prefixes:
             if c_low.startswith(prefix):
-                fact_text = content[len(prefix):].strip()
-                if not fact_text or len(fact_text) < 3:
-                    return None
+                parsed_fact = content[len(prefix):].strip()
+                break
 
-                if not self._is_safe_fact(fact_text):
-                    return None
+        if not parsed_fact and any(c_low.endswith(suf) for suf in ["zakoduj", "zakodować", "zakodowac", "zapamiętaj", "zapamietaj"]):
+            parsed_fact = re.sub(r"\s*(?:,?\s*)?(?:zakoduj|zakodować|zakodowac|zapamiętaj|zapamietaj)\s*$", "", content, flags=re.IGNORECASE).strip()
+
+        # 4b. SPECJALNA DETEKCJA RELACJI I KSYWEK (np. "Zapamietaj ze nazwyac masz Jagode MAMUSIĄ!", "Jagoda to Mamusia")
+        # Sprawdzamy zarówno parsed_fact, jak i cały content
+        check_texts = [t for t in [parsed_fact, content] if t]
+        for ct in check_texts:
+            m1 = re.search(r'(?:nazywać|nazywac|nazwyac|mówić\s+na|mowic\s+na|mów\s+na|mow\s+na|wołaj\s+na|wolaj\s+na)\s+(?:masz\s+)?([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_]+)\s+(?:jako\s+|per\s+)?([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_!]+)', ct, re.IGNORECASE)
+            m2 = re.search(r'masz\s+(?:nazywać|nazywac|nazwyac|mówić\s+na|mowic\s+na)\s+([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_]+)\s+(?:jako\s+|per\s+)?([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_!]+)', ct, re.IGNORECASE)
+            m3 = re.search(r'([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_]+)\s+to\s+([a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_!]+)', ct, re.IGNORECASE) if " to " in ct.lower() and not any(ct.lower().strip().startswith(q) for q in ["kto ", "co ", "czy ", "jak "]) else None
+            m_nick = m1 or m2 or m3
+
+            if m_nick:
+                p_raw = m_nick.group(1).strip().rstrip("!.,")
+                r_raw = m_nick.group(2).strip().rstrip("!.,")
+                p_norm = "Jagoda" if any(k in p_raw.lower() for k in ["jagod", "janow"]) else p_raw.capitalize()
+                r_norm = "Mamusia" if any(k in r_raw.lower() for k in ["mamus", "mama", "matk"]) else r_raw.capitalize()
+
+                # Zapis wielokierunkowy w definicjach
+                server_store["definitions"][r_norm.lower()] = p_norm
+                server_store["definitions"][r_raw.lower()] = p_norm
+                if "mamus" in r_norm.lower():
+                    server_store["definitions"]["mamusia"] = p_norm
+                    server_store["definitions"]["mamusią"] = p_norm
+                server_store["definitions"][p_norm.lower()] = r_norm
+
+                # Aktualizacja profilu użytkownika
+                u_key = p_norm.lower().replace(" ", "_")
+                if u_key in server_store["users"]:
+                    if r_norm not in server_store["users"][u_key].get("roles", []):
+                        server_store["users"][u_key]["roles"].append(r_norm)
+                    server_store["users"][u_key]["facts"].append(f"Szatek_Olo ustalił, że należy nazywać ją {r_norm}.")
 
                 new_id = len(server_store["facts"]) + 1
                 server_store["facts"].append({
                     "id": new_id,
-                    "content": fact_text,
+                    "content": f"{p_norm} to {r_norm} (ustalone przez {author_clean})",
                     "added_by": f"{author_clean} ({source})",
                     "timestamp": now_iso
                 })
                 self._save_vault()
                 self.sync_to_github()
                 if explicit_encode:
-                    return f"Zakodowałem: \"{fact_text}\" 🧠"
+                    return f"Zakodowałem: {p_norm} ma być nazywana {r_norm}! 🧠"
                 return None
 
-        if any(c_low.endswith(suf) for suf in ["zakoduj", "zakodować", "zakodowac", "zapamiętaj", "zapamietaj"]):
-            fact_text = re.sub(r"\s*(?:,?\s*)?(?:zakoduj|zakodować|zakodowac|zapamiętaj|zapamietaj)\s*$", "", content, flags=re.IGNORECASE).strip()
-            if fact_text and len(fact_text) >= 3 and self._is_safe_fact(fact_text):
-                new_id = len(server_store["facts"]) + 1
-                server_store["facts"].append({
-                    "id": new_id,
-                    "content": fact_text,
-                    "added_by": f"{author_clean} ({source})",
-                    "timestamp": now_iso
-                })
-                self._save_vault()
-                self.sync_to_github()
-                if explicit_encode:
-                    return f"Zakodowałem: \"{fact_text}\" 🧠"
-                return None
+        if parsed_fact and len(parsed_fact) >= 3 and self._is_safe_fact(parsed_fact):
+            new_id = len(server_store["facts"]) + 1
+            server_store["facts"].append({
+                "id": new_id,
+                "content": parsed_fact,
+                "added_by": f"{author_clean} ({source})",
+                "timestamp": now_iso
+            })
+            self._save_vault()
+            self.sync_to_github()
+            if explicit_encode:
+                return f"Zakodowałem: \"{parsed_fact}\" 🧠"
+            return None
 
         # 5. Ciche kodowanie definicji, relacji i faktów w tle (BEZ mówienia i pisania że zakodowano!)
         if " to " in c_low and "?" not in content and len(content.split()) <= 6:
             if not any(c_low.startswith(q) for q in ["kto ", "co ", "czy ", "jak ", "gdzie ", "kiedy ", "jaka ", "jaki ", "a kto", "a co", "nie "]):
                 parts = re.split(r"\s+to\s+", content, maxsplit=1, flags=re.IGNORECASE)
                 if len(parts) == 2 and 2 <= len(parts[0].strip()) <= 25 and 2 <= len(parts[1].strip()) <= 60:
-                    term, val = parts[0].strip(), parts[1].strip()
+                    term = parts[0].strip().rstrip("!.,")
+                    val = parts[1].strip().rstrip("!.,")
                     if self._is_safe_fact(term) and self._is_safe_fact(val):
-                        server_store["definitions"][term] = val
+                        t_low = term.lower()
+                        v_low = val.lower()
+                        server_store["definitions"][t_low] = val
+                        server_store["definitions"][v_low] = term
+                        if "mamus" in t_low:
+                            server_store["definitions"]["mamusia"] = val
+                            server_store["definitions"]["mamusią"] = val
+                        if "mamus" in v_low:
+                            server_store["definitions"]["mamusia"] = term
+                            server_store["definitions"]["mamusią"] = term
+
+                        # Aktualizacja profilu Jagody / użytkowników
+                        for person_name, role_name in [(term, val), (val, term)]:
+                            if any(k in person_name.lower() for k in ["jagod", "janow"]):
+                                u_key = "jagoda"
+                                if u_key in server_store["users"]:
+                                    if role_name not in server_store["users"][u_key].get("roles", []):
+                                        server_store["users"][u_key]["roles"].append(role_name)
+
                         server_store["facts"].append({
                             "id": len(server_store["facts"]) + 1,
                             "content": f"{term} to {val}",
@@ -503,6 +550,7 @@ class MemoryVault:
                             "timestamp": now_iso
                         })
                         self._save_vault()
+                        self.sync_to_github()
 
         # 6. Ciche kodowanie informacji o sobie w tle ("jestem...", "nazywam się...")
         if c_low.startswith("jestem ") or c_low.startswith("nazywam się ") or c_low.startswith("mów mi "):
@@ -565,9 +613,20 @@ class MemoryVault:
             lines.append("Wszystko mam bezpiecznie zaszyfrowane i zabezpieczone na GitHubie! 🛡️")
             return "\n".join(lines)
 
+        # Sprawdzenie wyuczonych definicji i relacji (np. "Kto to Mamusia?", "Kto jest Mamusią?")
+        defs = server_store.get("definitions", {})
+        for def_term, def_val in defs.items():
+            dt_clean = def_term.lower().strip()
+            if len(dt_clean) >= 3 and (dt_clean in q_clean or q_clean.endswith(dt_clean)):
+                if any(w in q_clean for w in ["kto", "kim", "co", "czym", "kogo"]):
+                    return f"**{def_term.capitalize()}** to na naszym serwerze oczywiście **{def_val}**! Pamiętam to doskonale z ustaleń! 🌸"
+
         # Pytanie: "Wiesz kto to Jagoda?" / "Kim jest Jagoda?"
         if any(k in q_clean for k in ["jagoda", "jagodę", "jagody", "janow", "janowka", "j_janow3kq"]):
-            return "Jasne, że wiem! **Jagoda** (na serwerze znana też jako `j_janow3kq` / `Janow`) to nasza dobra kumpela z ekipy Szatka i zaufana testerka bota. Zawsze miło ją widzieć i słyszeć na kanale! 🚀"
+            extra = ""
+            if "mamusia" in defs or "mamusią" in defs:
+                extra = " (nasza serwerowa Mamusia!)"
+            return f"Jasne, że wiem! **Jagoda**{extra} (na serwerze znana też jako `j_janow3kq` / `Janow`) to nasza dobra kumpela z ekipy Szatka i zaufana testerka bota. Zawsze miło ją widzieć i słyszeć na kanale! 🚀"
 
         # Pytanie: "Wiesz kto to Basista / Oliwier?" / "Kim jest Oliwier?"
         if any(k in q_clean for k in ["basista", "basisty", "bassist", "oliwier", "oliwiera"]):
