@@ -190,6 +190,129 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
 
     muted_channels = set()
 
+    async def execute_music_action(channel: discord.abc.Messageable, music_action: Dict[str, Any]):
+        """
+        Realizuje akcję muzyczną wyznaczoną przez Polski ChatGPT:
+        - Wysyła komendę dla Jockie Music (np. m!play Master of Puppets Metallica)
+        - Wypowiada zapowiedź głosem Zofii
+        - Uruchamia odtwarzanie utworu lub testu czasowego (np. na 10 sekund) na kanale głosowym!
+        """
+        act = music_action.get("action")
+        reply = music_action.get("reply", "")
+        jockie_cmd = music_action.get("jockie_cmd")
+        song_query = music_action.get("song_query")
+        duration_sec = music_action.get("duration_sec")
+
+        if reply:
+            await channel.send(reply)
+            if voice_engine.is_connected():
+                await voice_engine.enqueue_speech(reply)
+
+        if act == "STOP_MUSIC":
+            voice_engine.stop_audio()
+            if jockie_cmd:
+                await channel.send(jockie_cmd)
+            return
+
+        if act in ["PLAY_SONG", "PREVIEW_SONG"] and song_query:
+            if jockie_cmd:
+                # Wyślij komendę m!play na czacie dla Jockie Music
+                await channel.send(jockie_cmd)
+
+            # Odtwórz bezpośrednio na kanale głosowym (całość lub np. 10 sekund testu)
+            if voice_engine.is_connected():
+                await voice_engine.play_music_preview(song_query, duration_sec=duration_sec)
+
+            if duration_sec:
+                async def _stop_jockie_after_test():
+                    await asyncio.sleep(duration_sec + 1.0)
+                    try:
+                        await channel.send(
+                            f"⏱️ Minęło **{duration_sec} sekund** testu utworu **{song_query}**! "
+                            f"I jak – czy to jest ta piosenka, o którą Ci chodziło? (Jeśli gra Jockie Music: `m!stop`)"
+                        )
+                    except Exception:
+                        pass
+                asyncio.create_task(_stop_jockie_after_test())
+
+    async def handle_voice_input(member: discord.Member, recognized_text: str):
+        """
+        Obsługuje mowę użytkownika usłyszaną na kanale głosowym (STT pl-PL):
+        1. Uczy się ze słuchania i zapisuje wypowiedź w pamięci serwera.
+        2. Sprawdza wyuczone reguły (np. banan -> jabłko).
+        3. Sprawdza intencje muzyczne (zaśpiewaj / m!play / jaka to piosenka / test na 10 sekund).
+        4. Wysyła pełny kontekst wszystkich wiadomości do Polskiego ChatGPT i odpowiada głosem na żywo!
+        """
+        if not recognized_text or member.bot:
+            return
+
+        author_name = member.display_name or member.name
+        guild = member.guild
+        guild_id = str(guild.id) if guild else None
+        guild_name = guild.name if guild else "Serwer Głosowy"
+        vc_channel = voice_engine.voice_client.channel if voice_engine.is_connected() else None
+        if not vc_channel:
+            return
+
+        print(f"[VOICE_CHAT] 🎙️ [{author_name} na głosowym #{vc_channel.name}]: {recognized_text}")
+        conv_tracker.add_message(vc_channel.id, author_name, f"(GŁOS) {recognized_text}", is_bot=False)
+
+        # 1. Ucz się ze słuchania (source="GŁOS")
+        learned_voice = memory_vault.learn_from_message(author_name, recognized_text, guild_id, guild_name, source="GŁOS")
+
+        # 2. Sprawdź wyuczone reguły reakcji (np. powiesz "banan" -> odpowie "jabłko")
+        matched_rule = memory_vault.match_rule(recognized_text, guild_id)
+        if matched_rule:
+            await voice_engine.enqueue_speech(matched_rule)
+            try:
+                await vc_channel.send(f"🎙️ **{author_name} (Głos):** *„{recognized_text}”*\n🤖 **Aether AI:** {matched_rule}")
+            except Exception:
+                pass
+            return
+
+        if learned_voice and any(k in learned_voice.lower() for k in ["zapamiętałem", "nauczyłem", "zapisałem", "zakodowałem"]):
+            await voice_engine.enqueue_speech(learned_voice)
+            try:
+                await vc_channel.send(f"🎙️ **{author_name} (Głos):** *„{recognized_text}”*\n🧠 **Aether AI:** {learned_voice}")
+            except Exception:
+                pass
+            return
+
+        memory_ctx = memory_vault.build_context_for_prompt(author_name, recognized_text, guild_id, guild_name)
+        server_store = memory_vault._get_server_store(guild_id, guild_name)
+        global_lore = memory_vault.data.get("global_lore", {})
+
+        # 3. Sprawdź intencję muzyczną przez Polski ChatGPT (zaśpiewaj / m!play / jaka to piosenka / test 10s)
+        music_intent = await ai_brain.analyze_music_intent(vc_channel.id, author_name, recognized_text, memory_ctx)
+        if music_intent:
+            try:
+                await vc_channel.send(f"🎙️ **{author_name} (Głos):** *„{recognized_text}”*")
+            except Exception:
+                pass
+            await execute_music_action(vc_channel, music_intent)
+            return
+
+        # 4. Wygeneruj odpowiedź w Polskim ChatGPT na podstawie wszystkich wiadomości i 4 przykładów sytuacji
+        history = conv_tracker.get_history(vc_channel.id)
+        reply = await ai_brain.generate_response(
+            author_name,
+            recognized_text,
+            memory_ctx,
+            history,
+            server_store=server_store,
+            global_lore=global_lore,
+            source_modality="GŁOS"
+        )
+
+        conv_tracker.add_message(vc_channel.id, "Aether AI", reply, is_bot=True)
+        await voice_engine.enqueue_speech(reply)
+        try:
+            await vc_channel.send(f"🎙️ **{author_name} (Głos):** *„{recognized_text}”*\n🤖 **Aether AI:** {reply}")
+        except Exception:
+            pass
+
+    voice_engine.set_voice_command_callback(handle_voice_input)
+
     async def speak_on_vc(message: discord.Message, text_to_speak: str):
         """Gwarantuje połączenie z kanałem głosowym rozmówcy i odtwarza mowę na żywo."""
         if not voice_engine.is_connected() and message.guild:
@@ -209,7 +332,7 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
 
     @bot.event
     async def on_message(message: discord.Message):
-        if message.author == bot.user:
+        if message.author == bot.user or message.author.bot:
             return
 
         author_name = message.author.display_name or message.author.name
@@ -258,37 +381,27 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             conv_tracker.add_message(message.channel.id, "Aether AI", matched_rule, is_bot=True)
             return
 
-        # 2. BEZPOŚREDNIE ODPYTYWANIE PAMIĘCI ("Wiesz kto to Jagoda?", "Co wiesz o nas?", "Wiesz kto to Basista?")
-        recalled_knowledge = memory_vault.find_knowledge(content, author_name, guild_id, guild_name)
-        if recalled_knowledge:
-            print(f"[MEMORY_RECALL] Błyskawiczna odpowiedź z bazy pamięci na: '{content}'")
-            await message.reply(recalled_knowledge, mention_author=False)
-            await speak_on_vc(message, recalled_knowledge)
-            conv_tracker.add_message(message.channel.id, "Aether AI", recalled_knowledge, is_bot=True)
-            return
-
-        # 3. CIĄGŁA NAUKA: Ucz się nowych reguł, faktów, pojęć i zdań ze serwera
+        # 2. CIĄGŁA NAUKA Z CZYTANIA WIADOMOŚCI (Polski ChatGPT uczy się faktów, upodobań i reguł)
         if len(content) > 2:
-            learned_result = memory_vault.learn_from_message(author_name, content, guild_id, guild_name)
+            learned_result = memory_vault.learn_from_message(author_name, content, guild_id, guild_name, source="CZAT")
             if learned_result:
                 try:
                     await message.add_reaction("🧠")
                 except Exception:
                     pass
-                # Jeśli to jawne nauczenie reguły lub faktu, poinformuj użytkownika na czacie!
                 if any(k in learned_result.lower() for k in ["zapamiętałem", "nauczyłem", "zapisałem", "zakodowałem"]):
                     await message.reply(learned_result, mention_author=False)
                     await speak_on_vc(message, learned_result)
                     return
 
-        # 4. Obsługa komend bota (!)
+        # 3. Obsługa komend bota (!)
         if content.startswith("!"):
             await bot.process_commands(message)
             return
 
-        # 5. Naturalne polecenia wejścia na kanał głosowy (choc na vc, chodź na vc, wbijaj na głosowy)
+        # 4. Naturalne polecenia wejścia na kanał głosowy (choc na vc, chodź na vc, wbijaj na głosowy)
         c_low = re.sub(r"[\/\\!\?,\.]", " ", content.lower())
-        clean_words = [w.strip() for w in re.sub(r"<@!?\d+>", "", c_low).split() if w.strip()]
+        clean_words = [w.strip() for w in re.sub(r"<@!?\d+>|<@&\d+>", "", c_low).split() if w.strip()]
         is_join_command = (
             bool(re.search(r"\b(choc|choć|chodz|chodź|wbij|wbijaj|wejdz|wejdź|dolacz|dołącz)\b.*\b(vc|dc|glosow|głosow|kanal|kanał)\b", c_low))
             or any(p in c_low for p in [
@@ -311,35 +424,53 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
             if target_vc:
                 connected = await voice_engine.connect(target_vc)
                 if connected:
-                    await message.reply(f"🔊 Już wbiłem na kanał głosowy **{target_vc.name}**! Słucham Cię cieplutko.", mention_author=False)
-                    await voice_engine.enqueue_speech(f"Siemanko {author_name}! Wbiłem na kanał {target_vc.name}. Słucham Cię cieplutko!")
+                    await message.reply(f"🔊 Już wbiłem na kanał głosowy **{target_vc.name}**! Słucham Was na żywo i odpowiadam głosem.", mention_author=False)
+                    await voice_engine.enqueue_speech(f"Siemanko {author_name}! Wbiłem na kanał {target_vc.name}. Słucham Was na żywo!")
                     return
 
-        # 6. INTELIGENTNA SELEKCJA: KIEDY BOT ODPOWIADA? (Nie odpowiada na wszystko!)
-        is_mentioned = bot.user in message.mentions
+        # 5. SPRAWDZENIE INTENCJI MUZYCZNYCH PRZEZ POLSKI CHATGPT (zaśpiewaj / m!play / jaka to piosenka / test 10 sekund)
+        memory_ctx = memory_vault.build_context_for_prompt(author_name, content, guild_id, guild_name)
+        music_intent = await ai_brain.analyze_music_intent(message.channel.id, author_name, content, memory_ctx)
+        if music_intent:
+            if not voice_engine.is_connected() and message.guild:
+                target = (
+                    message.author.voice.channel
+                    if (hasattr(message.author, "voice") and message.author.voice and message.author.voice.channel)
+                    else find_best_voice_channel(message.guild)
+                )
+                if target:
+                    await voice_engine.connect(target)
+            await execute_music_action(message.channel, music_intent)
+            return
+
+        # 6. INTELIGENTNA SELEKCJA: KIEDY BOT ODPOWIADA?
+        is_mentioned = (bot.user in message.mentions) or any(
+            r.name.lower() == "aether ai" or r.id == 1574495066779689013 for r in getattr(message, "role_mentions", [])
+        )
         is_reply_to_bot = (
             message.reference
             and message.reference.resolved
             and getattr(message.reference.resolved, "author", None) == bot.user
         )
         is_dm = isinstance(message.channel, discord.DMChannel)
+        is_dedicated_bot_channel = (message.channel.id == TARGET_VOICE_CHANNEL_ID)
 
         name_triggers = [
             "bot", "bocie", "aether", "aetherze", "ai", "chat gpt", "chatgpt",
-            "mordo", "ziomek", "ej bot", "halo bot", "hej bot"
+            "mordo", "ziomek", "ej bot", "halo bot", "hej bot", "powiedz", "odezwij",
+            "jagoda", "basista", "oliwier", "szatek", "co wiesz", "analiza", "przeanalizuj"
         ]
         words_in_msg = re.findall(r"\b\w+\b", c_low)
         starts_or_calls_bot = (
-            any(trigger in words_in_msg[:3] for trigger in ["bot", "bocie", "aether", "ai", "chatgpt"])
+            any(trigger in words_in_msg[:3] for trigger in ["bot", "bocie", "aether", "ai", "chatgpt", "powiedz", "odezwij"])
             or any(t in c_low for t in name_triggers)
         )
 
-        # Kontynuacja wątku: TYLKO jeśli w ostatnich 45s toczyła się rozmowa I pada pytanie
         time_since_reply = conv_tracker.time_since_last_bot_reply(message.channel.id)
         is_continuation = (
-            (time_since_reply < 45.0)
+            (time_since_reply < 60.0)
             and len(clean_words) >= 2
-            and ("?" in content or any(content.lower().strip().startswith(w) for w in ["co", "jak", "dlaczego", "kiedy", "kto", "czy"]))
+            and ("?" in content or any(content.lower().strip().startswith(w) for w in ["co", "jak", "dlaczego", "kiedy", "kto", "czy", "a "]))
             and not content.startswith("http")
         )
 
@@ -348,24 +479,34 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         elif is_mentioned:
             muted_channels.discard(message.channel.id)
 
-        should_respond = is_mentioned or is_reply_to_bot or is_dm or starts_or_calls_bot or is_continuation
+        # Ignoruj komendy innych botów muzycznych (np. M!s, m!play wpisane przez gracza)
+        if c_low.startswith("m!"):
+            return
+
+        should_respond = is_mentioned or is_reply_to_bot or is_dm or starts_or_calls_bot or is_continuation or (is_dedicated_bot_channel and len(clean_words) >= 2)
 
         if not should_respond:
-            # Gracz napisał coś do kogoś innego lub rzucił randomowe słowo (np. "Super", "Gówno")
-            # Bot milczy, aby nie spamować czatu!
             return
 
         async with message.channel.typing():
-            clean_query = content.replace(f"<@{bot.user.id}>", "").strip()
+            clean_query = re.sub(r"<@!?\d+>|<@&\d+>", "", content).strip()
             if not clean_query:
-                clean_query = "Co tam słychać?"
+                clean_query = "Co tam słychać na serwerze?"
 
-            # Buduj kontekst pamięci dla TEGO serwera i TEGO użytkownika
-            memory_ctx = memory_vault.build_context_for_prompt(author_name, clean_query, guild_id, guild_name)
+            server_store = memory_vault._get_server_store(guild_id, guild_name)
+            global_lore = memory_vault.data.get("global_lore", {})
             history = conv_tracker.get_history(message.channel.id)
 
-            # Generuj odpowiedź z modelu Super ChatGPT
-            reply = await ai_brain.generate_response(author_name, clean_query, memory_ctx, history)
+            # POLSKI CHATGPT WSZĘDZIE: Analizuje wszystkie wiadomości, 4 przykłady i generuje odpowiedź adekwatną do sytuacji!
+            reply = await ai_brain.generate_response(
+                author_name,
+                clean_query,
+                memory_ctx,
+                history,
+                server_store=server_store,
+                global_lore=global_lore,
+                source_modality="CZAT"
+            )
 
             conv_tracker.add_message(message.channel.id, "Aether AI", reply, is_bot=True)
             await message.reply(reply, mention_author=False)
@@ -456,35 +597,80 @@ def create_bot(with_message_content: bool = True) -> commands.Bot:
         await voice_engine.enqueue_speech(text)
         await ctx.message.add_reaction("🗣️")
 
+    @bot.command(name="analiza", aliases=["4przyklady", "sytuacja", "analizuj", "kto_co_lubi"])
+    async def cmd_analiza(ctx: commands.Context):
+        """Polski ChatGPT analizuje wszystkie wiadomości i wyświetla 4 przykłady co kto lubi, jaki kto jest i jak wygląda sytuacja na serwerze."""
+        guild_id = str(ctx.guild.id) if ctx.guild else None
+        guild_name = ctx.guild.name if ctx.guild else "Serwer"
+        author_name = ctx.author.display_name or ctx.author.name
+        memory_ctx = memory_vault.build_context_for_prompt(author_name, "Przeanalizuj wszystkie wiadomości i podaj 4 przykłady", guild_id, guild_name)
+        server_store = memory_vault._get_server_store(guild_id, guild_name)
+        global_lore = memory_vault.data.get("global_lore", {})
+        history = conv_tracker.get_history(ctx.channel.id)
+
+        reply = await ai_brain.generate_response(
+            author_name,
+            "Przeanalizuj wszystkie wiadomości, podaj 4 przykłady co kto lubi, jaki kto jest i jak wygląda sytuacja na serwerze.",
+            memory_ctx,
+            history,
+            server_store=server_store,
+            global_lore=global_lore,
+            source_modality="CZAT"
+        )
+        await ctx.send(reply)
+        await speak_on_vc(ctx.message, reply)
+
+    @bot.command(name="zaspiewaj", aliases=["zaśpiewaj", "pusc", "puść", "zagraj"])
+    async def cmd_zaspiewaj(ctx: commands.Context, *, song_query: str):
+        """Puszcza utwór przez Jockie Music (m!play) i śpiewa/odtwarza na kanale głosowym."""
+        guild_id = str(ctx.guild.id) if ctx.guild else None
+        guild_name = ctx.guild.name if ctx.guild else "Serwer"
+        author_name = ctx.author.display_name or ctx.author.name
+        memory_ctx = memory_vault.build_context_for_prompt(author_name, f"zaśpiewaj {song_query}", guild_id, guild_name)
+        music_intent = await ai_brain.analyze_music_intent(ctx.channel.id, author_name, f"zaśpiewaj {song_query}", memory_ctx)
+        if music_intent:
+            await execute_music_action(ctx.channel, music_intent)
+
+    @bot.command(name="testmuzyki", aliases=["probka", "próbka", "test10s"])
+    async def cmd_test_music(ctx: commands.Context, duration_sec: int = 10, *, song_query: str = "Master of Puppets Metallica"):
+        """Puszcza utwór na określoną liczbę sekund (np. 10 sekund) do przetestowania czy to ta muzyka."""
+        guild_id = str(ctx.guild.id) if ctx.guild else None
+        guild_name = ctx.guild.name if ctx.guild else "Serwer"
+        author_name = ctx.author.display_name or ctx.author.name
+        memory_ctx = memory_vault.build_context_for_prompt(author_name, f"puść {song_query} na {duration_sec} sekund", guild_id, guild_name)
+        music_intent = await ai_brain.analyze_music_intent(ctx.channel.id, author_name, f"puść {song_query} na {duration_sec} sekund", memory_ctx)
+        if music_intent:
+            await execute_music_action(ctx.channel, music_intent)
+
     @bot.command(name="status")
     async def cmd_status(ctx: commands.Context):
         """Wyświetla status bota, pamięci serwera i połączenia audio."""
         guild_id = str(ctx.guild.id) if ctx.guild else None
         stats = memory_vault.get_stats(guild_id)
-        voice_state = f"🔊 Połączony ({voice_engine.voice_client.channel.name})" if voice_engine.is_connected() else "🔇 Rozłączony"
+        voice_state = f"🔊 Połączony + Nasłuch STT ({voice_engine.voice_client.channel.name})" if voice_engine.is_connected() else "🔇 Rozłączony"
 
-        embed = discord.Embed(title="🛡️ Status Aether Super ChatGPT (Ciepły Głos)", color=0x3a86ff)
-        embed.add_field(name="🎙️ Kanał Głosowy", value=voice_state, inline=True)
-        embed.add_field(name="🗣️ Aktywny Głos", value="Ciepły Neuronowy (pl-PL-ZofiaNeural)", inline=True)
+        embed = discord.Embed(title="🛡️ Status Aether AI – Polski ChatGPT (Słuchanie + Mówienie + Muzyka)", color=0x3a86ff)
+        embed.add_field(name="🎙️ Kanał Głosowy & STT", value=voice_state, inline=True)
+        embed.add_field(name="🗣️ Aktywny Głos", value="Polski ChatGPT (pl-PL-ZofiaNeural)", inline=True)
         embed.add_field(name="🌐 Przestrzeń Serwera", value=stats.get("server_name", "Prywatna"), inline=True)
-        embed.add_field(name="🧠 Baza Użytkowników", value=f"{stats.get('users_count', 0)} profili", inline=True)
-        embed.add_field(name="📚 Zapamiętane Fakty Serwera", value=f"{stats.get('facts_count', 0)} faktów", inline=True)
-        embed.add_field(name="🔒 Szyfrowanie Pamięci", value="AES-256-GCM (Zero-Leak)", inline=True)
-        embed.set_footer(text="Działa w GitHub Actions 24/7 • ZSC 2026")
+        embed.add_field(name="🧠 Przeanalizowane Wypowiedzi", value=f"{stats.get('chat_log_count', 0)} wiadomości (Czat + Głos)", inline=True)
+        embed.add_field(name="📚 Zakodowane Fakty & Reguły", value=f"{stats.get('facts_count', 0)} faktów / {stats.get('rules_count', 0)} reguł", inline=True)
+        embed.add_field(name="🔒 Szyfrowanie Pamięci", value="AES-256-GCM (GitHub Sync)", inline=True)
+        embed.set_footer(text="Polski ChatGPT Wszędzie • Działa w GitHub Actions 24/7 • ZSC 2026")
         await ctx.send(embed=embed)
 
     @bot.command(name="pomoc", aliases=["help"])
     async def cmd_help(ctx: commands.Context):
         """Pomoc i lista komend."""
-        msg = """**🤖 Aether AI – Super ChatGPT z Ciepłym Głosem:**
-• `!dolacz` – Dołącza do kanału głosowego `🤖・Testowanie・Bota・AI` (lub Twojego kanału)
-• `!wyjdz` – Opuszcza kanał głosowy
-• `!powiedz [tekst]` – Wypowiada tekst ciepłym głosem neuronowym
-• `!status` – Raport stanu bota i pamięci serwera
-• `!pamiec` – Zapamiętane fakty z tego serwera
-• `!reset_pamieci` – [Admin] Reset pamięci serwera
-• `zapamiętaj, że [fakt]` – Trwały zapis faktu w pamięci serwera!
-• Możesz ze mną rozmawiać oznaczając `@Aether AI` lub pisząc "Bot", a jeśli jestem na kanale głosowym – usłyszysz mnie na żywo!"""
+        msg = """**🤖 Aether AI – Polski ChatGPT (Słuchanie na VC + Mówienie + Jockie Music):**
+• **Słuchanie na żywo (STT):** Gdy jesteś ze mną na kanale głosowym, po prostu mów do mikrofonu – słucham po polsku, uczę się i odpowiadam na głos!
+• **Muzyka i Jockie Music:**
+  - Powiedz lub napisz: `zaśpiewaj Master of Puppets Metallicy` ➔ wysyłam `m!play Master of Puppets Metallica` i odpalam utwór!
+  - Powiedz lub napisz: `puść Master of Puppets na 10 sekund` (lub `!testmuzyki 10 Master of Puppets`) ➔ puszczam utwór dokładnie na 10 sekund do przetestowania czy to ta muzyka!
+  - Zaśpiewaj fragment tekstu lub napisz: `jaka to piosenka: [słowa]` ➔ Polski ChatGPT rozpozna tytuł i zapyta, czy puścić na próbę!
+• `!analiza` (lub napisz `co wiesz o nas?`) – Polski ChatGPT analizuje wszystkie wiadomości i podaje **4 przykłady** co kto lubi, jaki kto jest i jak wygląda sytuacja na serwerze!
+• `jak ktoś napisze banan to odpisz jabłko` (lub `!naucz banan => jabłko`) – Uczy mnie dowolnej reguły reakcji!
+• `!dolacz` / `!głosowy` / `choc na vc` – Dołącza na kanał głosowy"""
         await ctx.send(msg)
 
     @bot.command(name="pamiec", aliases=["fakty", "wiedza"])

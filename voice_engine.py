@@ -1,58 +1,135 @@
 """
-voice_engine.py - Krystalicznie Czysty Silnik Głosu dla Discorda (Edge-TTS + Pre-Render WAV + Anti-Deadlock)
-============================================================================================================
+voice_engine.py - Dwukierunkowy Silnik Głosu i Muzyki (STT pl-PL + DAVE E2EE + TTS Zofia + Testy Muzyczne X sek.)
+=================================================================================================================
 Odpowiada za:
-1. Ciepły, naturalny głos neuronowy ChatGPT (pl-PL-ZofiaNeural).
-2. Krystalicznie czysty dźwięk bez szumów, zniekształceń i przesterów (brak clippingu):
-   - Pre-renderowanie do formatu bezstratnego PCM 48kHz Stereo WAV (dokładny standard Discord Opus).
-   - Dynamiczny zapas głośności (headroom 0.90) eliminujący trzaski.
-   - W 100% odporne na blokady międzywątkowe (thread-safe polling pętli odtwarzania).
+1. Słuchanie użytkowników na kanale głosowym (Speech-to-Text po polsku `pl-PL`):
+   - Odbiór pakietów przez `discord-ext-voice-recv` (`VoiceRecvClient`).
+   - Deszyfrowanie warstwy DAVE E2EE (`davey==0.1.7`) dla przychodzących pakietów głosowych.
+   - Odporność na uszkodzone ramki Opus (brak crashowania wątku `PacketRouter`).
+   - Detekcja końca wypowiedzi (VAD) i transkrypcja mowy w chmurze (`SpeechRecognition` Google `pl-PL`).
+2. Mówienie ciepłym głosem neuronowym Polskiego ChatGPT (`pl-PL-ZofiaNeural`):
+   - Pre-renderowanie do bezstratnego PCM 48kHz Stereo WAV.
+3. Odtwarzanie utworów i fragmentów testowych (np. 10 sekund do sprawdzenia czy to ta piosenka) przez `yt-dlp` + `FFmpeg`.
 """
 
 import os
-import asyncio
-import uuid
 import re
-from typing import Optional
+import time
+import wave
+import uuid
+import struct
+import asyncio
+from typing import Optional, Dict, Any, Callable, Awaitable
 import discord
 import edge_tts
+
+try:
+    import davey
+    HAS_DAVEY = True
+except ImportError:
+    HAS_DAVEY = False
+
+try:
+    from discord.ext import voice_recv
+    from discord.ext.voice_recv.opus import PacketDecoder
+    HAS_VOICE_RECV = True
+except ImportError:
+    HAS_VOICE_RECV = False
+
+try:
+    import speech_recognition as sr
+    HAS_SR = True
+except ImportError:
+    HAS_SR = False
+
+try:
+    import yt_dlp
+    HAS_YTDLP = True
+except ImportError:
+    HAS_YTDLP = False
 
 DEFAULT_WARM_VOICE = "pl-PL-ZofiaNeural"
 TEMP_AUDIO_DIR = "temp_audio"
 
 
+# --- PATCH DAVE E2EE DLA ODBIORU GŁOSU (discord-ext-voice-recv) ---
+if HAS_VOICE_RECV:
+    _orig_decode_packet = PacketDecoder._decode_packet
+
+    def _dave_safe_decode_packet(self, packet):
+        """
+        Odszyfrowuje warstwę DAVE E2EE (davey) przed dekodowaniem Opus i chroni wątek
+        PacketRouter przed jakimkolwiek wyjątkiem OpusError.
+        """
+        if self._decoder is None:
+            return packet, b"\x00" * 3840
+        try:
+            if packet and getattr(packet, "decrypted_data", None):
+                opus_data = bytes(packet.decrypted_data)
+                if HAS_DAVEY:
+                    vc = getattr(self.sink, "voice_client", None)
+                    conn = getattr(vc, "_connection", None) if vc else None
+                    dave_sess = getattr(conn, "dave_session", None) if conn else None
+                    user_id = self._cached_id or (vc._get_id_from_ssrc(self.ssrc) if vc else None)
+                    if dave_sess is not None and user_id:
+                        try:
+                            opus_data = dave_sess.decrypt(int(user_id), davey.MediaType.audio, opus_data)
+                        except Exception:
+                            # Jeśli pakiet jest w trybie passthrough (niezaszyfrowany DAVE), użyj oryginalnego opus_data
+                            pass
+                pcm = self._decoder.decode(opus_data, fec=False)
+                return packet, pcm
+            return packet, b"\x00" * 3840
+        except Exception:
+            # Zwróć 20ms ciszy zamiast przerywać wątek nasłuchiwania
+            return packet, b"\x00" * 3840
+
+    PacketDecoder._decode_packet = _dave_safe_decode_packet
+
+
 def sanitize_text_for_speech(text: str) -> str:
-    """Oczyszcza tekst dla syntezatora mowy, usuwając emoji, linki i zbędne formatowanie."""
+    """Oczyszcza tekst dla syntezatora mowy, usuwając emoji, linki i komendy techniczne."""
     if not text:
         return ""
-    # Usuń linki
     text = re.sub(r"https?://\S+", "", text)
-    # Usuń wzmianki Discorda <@123>
-    text = re.sub(r"<@!?\d+>", "", text)
-    # Usuń formatowanie markdown
+    text = re.sub(r"<@!?\d+>|<@&\d+>", "", text)
+    text = re.sub(r"`m![^`]+`", "", text)
     text = re.sub(r"[\*`#_~>]", "", text)
-    # Usuń emoji i symbole specjalne (w tym pionowe kropki z nazw kanałów)
-    text = re.sub(r"[\U00010000-\U0010ffff]|[\u2600-\u27bf]|[\ud83c-\ud83e][\ud000-\udfff]|[\ufe30-\ufe4f\uff00-\uffef]", " ", text)
-    # Zastąp cudzysłowy i myślniki naturalnymi pauzami
+    text = re.sub(
+        r"[\U00010000-\U0010ffff]|[\u2600-\u27bf]|[\ud83c-\ud83e][\ud000-\udfff]|[\ufe30-\ufe4f\uff00-\uffef]|1️⃣|2️⃣|3️⃣|4️⃣",
+        " ",
+        text
+    )
     text = text.replace("„", "").replace("”", "").replace('"', "")
     text = text.replace("–", ", ").replace("—", ", ").replace("➔", " to ")
 
-    # Weź maksymalnie 2-3 pełne zdania (do 250 znaków) dla płynnej, naturalnej wypowiedzi głosowej
-    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", text.strip())
     clean_parts = []
     total_len = 0
     for s in sentences:
         s_clean = s.strip()
         if not s_clean:
             continue
-        if total_len + len(s_clean) < 250:
+        if total_len + len(s_clean) < 280:
             clean_parts.append(s_clean)
             total_len += len(s_clean)
         else:
             break
 
     result = " ".join(clean_parts).strip()
-    return result or text[:200].strip()
+    return result or text[:220].strip()
+
+
+def _compute_pcm_rms(pcm_bytes: bytes) -> float:
+    """Oblicza średnią głośność (amplitudę) bufora 16-bit PCM, aby odróżnić mowę od ciszy."""
+    if not pcm_bytes or len(pcm_bytes) < 400:
+        return 0.0
+    step = 64
+    samples = []
+    for i in range(0, len(pcm_bytes) - 2, step):
+        val = struct.unpack_from("<h", pcm_bytes, i)[0]
+        samples.append(abs(val))
+    return (sum(samples) / len(samples)) if samples else 0.0
 
 
 class DiscordVoiceEngine:
@@ -61,26 +138,44 @@ class DiscordVoiceEngine:
         self.voice_client: Optional[discord.VoiceClient] = None
         self.speech_queue: asyncio.Queue = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
+        self._stt_task: Optional[asyncio.Task] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+        # Callback wywoływany po rozpoznaniu mowy użytkownika na kanale głosowym: async def cb(member, text)
+        self.on_voice_command_callback: Optional[Callable[[discord.Member, str], Awaitable[None]]] = None
+
+        # Bufory audio per użytkownik: user_id -> {"member": member, "chunks": [bytes], "last_ts": float, "start_ts": float}
+        self._user_audio_buffers: Dict[int, Dict[str, Any]] = {}
+        self._is_playing_music: bool = False
 
         os.makedirs(TEMP_AUDIO_DIR, exist_ok=True)
 
+    def set_voice_command_callback(self, callback: Callable[[discord.Member, str], Awaitable[None]]):
+        """Rejestruje funkcję obsługującą rozpoznaną mowę użytkownika na kanale głosowym."""
+        self.on_voice_command_callback = callback
+
     def start_worker(self, loop: asyncio.AbstractEventLoop):
-        """Uruchamia asynchronicznego workera kolejki odtwarzania audio."""
+        """Uruchamia asynchroniczne workery odtwarzania mowy (TTS) oraz nasłuchiwania (STT)."""
+        self._loop = loop
         if self._worker_task is None or self._worker_task.done():
             self._worker_task = loop.create_task(self._process_queue())
+        if self._stt_task is None or self._stt_task.done():
+            self._stt_task = loop.create_task(self._stt_monitor_loop())
 
     async def connect(self, channel: discord.VoiceChannel) -> bool:
-        """Dołącza bota do wskazanego kanału głosowego lub synchronizuje aktywne połączenie."""
+        """Dołącza bota do kanału głosowego z aktywnym nasłuchiwaniem (VoiceRecvClient)."""
         try:
             guild_vc = channel.guild.voice_client
             if guild_vc:
                 self.voice_client = guild_vc
                 if guild_vc.is_connected():
                     if guild_vc.channel.id == channel.id:
+                        self._ensure_listening()
                         return True
                     print(f"[VOICE_ENGINE] Przenoszenie z '{guild_vc.channel.name}' do '{channel.name}'...")
                     await guild_vc.move_to(channel)
                     await asyncio.sleep(0.4)
+                    self._ensure_listening()
                     return True
                 else:
                     try:
@@ -89,23 +184,135 @@ class DiscordVoiceEngine:
                         pass
 
             print(f"[VOICE_ENGINE] Łączenie z kanałem głosowym '{channel.name}' (ID: {channel.id})...")
-            self.voice_client = await channel.connect(reconnect=True, timeout=20.0)
-            # Poczekaj na zakończenie uzgadniania kluczy DAVE MLS E2EE (do 3.0s)
+            if HAS_VOICE_RECV:
+                self.voice_client = await channel.connect(cls=voice_recv.VoiceRecvClient, reconnect=True, timeout=20.0)
+            else:
+                self.voice_client = await channel.connect(reconnect=True, timeout=20.0)
+
             conn = getattr(self.voice_client, "_connection", None)
             wait_dave = 0.0
             while conn and getattr(conn, "dave_protocol_version", 0) > 0 and not getattr(conn, "can_encrypt", False) and wait_dave < 3.0:
                 await asyncio.sleep(0.15)
                 wait_dave += 0.15
             if conn:
-                print(f"[VOICE_ENGINE] 🔒 Status DAVE E2EE: v={getattr(conn, 'dave_protocol_version', 0)}, can_encrypt={getattr(conn, 'can_encrypt', False)} (czas: {wait_dave:.2f}s)")
+                print(f"[VOICE_ENGINE] 🔒 Status DAVE E2EE: v={getattr(conn, 'dave_protocol_version', 0)}, can_encrypt={getattr(conn, 'can_encrypt', False)}")
+
+            self._ensure_listening()
             return True
         except Exception as e:
             print(f"[VOICE_ENGINE] Błąd połączenia z kanałem {channel.name}: {e}")
             return False
 
+    def _ensure_listening(self):
+        """Uruchamia odbiór pakietów głosowych użytkowników na kanale (STT Listener)."""
+        if not HAS_VOICE_RECV or not self.voice_client or not self.voice_client.is_connected():
+            return
+        try:
+            if hasattr(self.voice_client, "is_listening") and not self.voice_client.is_listening():
+                sink = voice_recv.BasicSink(self._on_incoming_voice_packet)
+                self.voice_client.listen(sink)
+                print("[VOICE_ENGINE] 👂 Nasłuchiwanie głosu użytkowników na kanale (STT pl-PL) AKTYWNE!")
+        except Exception as e:
+            print(f"[VOICE_ENGINE] Ostrzeżenie przy uruchamianiu nasłuchiwania: {e}")
+
+    def _on_incoming_voice_packet(self, user: Optional[discord.Member], data: Any):
+        """Odbiera zdekodowane ramki PCM 48kHz Stereo od mówiącego użytkownika."""
+        if user is None or getattr(user, "bot", False):
+            return
+        pcm = getattr(data, "pcm", None)
+        if not pcm:
+            return
+
+        now = time.monotonic()
+        uid = user.id
+        buf = self._user_audio_buffers.get(uid)
+        if buf is None:
+            self._user_audio_buffers[uid] = {
+                "member": user,
+                "chunks": [pcm],
+                "start_ts": now,
+                "last_ts": now
+            }
+        else:
+            buf["chunks"].append(pcm)
+            buf["last_ts"] = now
+            buf["member"] = user
+
+    async def _stt_monitor_loop(self):
+        """Monitoruje bufory głosowe użytkowników i po wykryciu końca wypowiedzi uruchamia STT po polsku."""
+        while True:
+            await asyncio.sleep(0.25)
+            try:
+                if not self._user_audio_buffers:
+                    continue
+
+                now = time.monotonic()
+                ready_uids = []
+                for uid, buf in list(self._user_audio_buffers.items()):
+                    silence_dur = now - buf["last_ts"]
+                    total_dur = buf["last_ts"] - buf["start_ts"]
+                    # Koniec wypowiedzi po 1.1s ciszy lub osiągnięciu 11s ciągłej mowy
+                    if silence_dur >= 1.1 or total_dur >= 11.0:
+                        ready_uids.append(uid)
+
+                for uid in ready_uids:
+                    buf = self._user_audio_buffers.pop(uid, None)
+                    if not buf:
+                        continue
+                    raw_pcm = b"".join(buf["chunks"])
+                    member = buf["member"]
+                    # Minimum ~0.55s mowy (48000 Hz * 2 kanały * 2 bajty = 192000 bajtów/sek)
+                    if len(raw_pcm) < 100000:
+                        continue
+                    rms = _compute_pcm_rms(raw_pcm)
+                    if rms < 180.0:
+                        continue
+
+                    asyncio.create_task(self._transcribe_and_dispatch(member, raw_pcm))
+            except Exception as e:
+                print(f"[VOICE_ENGINE] Błąd w pętli STT: {e}")
+
+    async def _transcribe_and_dispatch(self, member: discord.Member, raw_pcm: bytes):
+        """Zamienia bufor PCM 48kHz Stereo na tekst po polsku (pl-PL) i przekazuje do Polskiego ChatGPT."""
+        if not HAS_SR:
+            return
+        wav_path = os.path.join(TEMP_AUDIO_DIR, f"stt_{uuid.uuid4().hex[:8]}.wav")
+        try:
+            def _save_and_recognize() -> Optional[str]:
+                with wave.open(wav_path, "wb") as wf:
+                    wf.setnchannels(2)
+                    wf.setsampwidth(2)
+                    wf.setframerate(48000)
+                    wf.writeframes(raw_pcm)
+
+                recognizer = sr.Recognizer()
+                with sr.AudioFile(wav_path) as source:
+                    audio_data = recognizer.record(source)
+                return recognizer.recognize_google(audio_data, language="pl-PL")
+
+            loop = asyncio.get_running_loop()
+            recognized_text = await loop.run_in_executor(None, _save_and_recognize)
+            if recognized_text and len(recognized_text.strip()) >= 2:
+                clean_txt = recognized_text.strip()
+                print(f"[VOICE_STT] 🎙️ Usłyszano od {member.display_name}: '{clean_txt}'")
+                if self.on_voice_command_callback:
+                    await self.on_voice_command_callback(member, clean_txt)
+        except sr.UnknownValueError:
+            # Szum lub niezrozumiałe mruknięcie – ignoruj
+            pass
+        except Exception as e:
+            print(f"[VOICE_STT] Ostrzeżenie transkrypcji: {e}")
+        finally:
+            if os.path.exists(wav_path):
+                try:
+                    os.remove(wav_path)
+                except Exception:
+                    pass
+
     async def disconnect(self):
         """Bezpiecznie odłącza bota z kanału głosowego."""
         try:
+            self._is_playing_music = False
             if self.voice_client:
                 await self.voice_client.disconnect(force=True)
             self.voice_client = None
@@ -115,6 +322,74 @@ class DiscordVoiceEngine:
     def is_connected(self) -> bool:
         return bool(self.voice_client and self.voice_client.is_connected())
 
+    def stop_audio(self):
+        """Zatrzymuje aktualnie odtwarzaną muzykę lub mowę na kanale głosowym."""
+        self._is_playing_music = False
+        if self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing():
+            self.voice_client.stop()
+
+    async def play_music_preview(self, song_query: str, duration_sec: Optional[int] = None) -> bool:
+        """
+        Pobiera strumień utworu z YouTube (yt-dlp) i odtwarza go bezpośrednio na kanale głosowym
+        (w całości lub przez zadany czas testowy, np. 10 sekund, żeby sprawdzić czy to ta piosenka!).
+        """
+        if not HAS_YTDLP or not self.is_connected():
+            return False
+
+        try:
+            def _extract_stream_url() -> Optional[Tuple[str, str]]:
+                ydl_opts = {
+                    "format": "bestaudio/best",
+                    "noplaylist": True,
+                    "quiet": True,
+                    "default_search": "ytsearch1"
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(f"ytsearch1:{song_query}", download=False)
+                    if "entries" in info and info["entries"]:
+                        entry = info["entries"][0]
+                    else:
+                        entry = info
+                    return entry.get("url"), entry.get("title", song_query)
+
+            loop = asyncio.get_running_loop()
+            stream_info = await loop.run_in_executor(None, _extract_stream_url)
+            if not stream_info or not stream_info[0]:
+                return False
+
+            stream_url, track_title = stream_info
+            print(f"[VOICE_MUSIC] 🎵 Odtwarzanie utworu: '{track_title}' (limit czasu: {duration_sec or 'całość'}s)")
+
+            # Poczekaj aż zakończy się bieżąca zapowiedź głosowa TTS
+            wait_tts = 0.0
+            while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing() and wait_tts < 15.0:
+                await asyncio.sleep(0.2)
+                wait_tts += 0.2
+
+            before_opts = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+            options = f"-vn -af volume=0.75 -t {int(duration_sec)}" if duration_sec else "-vn -af volume=0.75"
+
+            self._is_playing_music = True
+            source = discord.FFmpegPCMAudio(stream_url, before_options=before_opts, options=options)
+            self.voice_client.play(source)
+
+            if duration_sec:
+                asyncio.create_task(self._handle_preview_timer(track_title, duration_sec))
+            return True
+        except Exception as e:
+            print(f"[VOICE_MUSIC] Błąd odtwarzania muzyki ({song_query}): {e}")
+            self._is_playing_music = False
+            return False
+
+    async def _handle_preview_timer(self, track_title: str, duration_sec: int):
+        """Odlicza czas testowego odtwarzania (np. 10 sekund), zatrzymuje muzykę i pyta czy to ten utwór."""
+        await asyncio.sleep(duration_sec + 0.5)
+        if self._is_playing_music:
+            self.stop_audio()
+            await self.enqueue_speech(
+                f"Minęło {duration_sec} sekund testu utworu {track_title}! I jak, to jest ta piosenka, o którą Ci chodziło?"
+            )
+
     async def enqueue_speech(self, text: str):
         """Dodaje oczyszczony tekst do kolejki syntezy mowy."""
         clean_speech = sanitize_text_for_speech(text)
@@ -122,7 +397,6 @@ class DiscordVoiceEngine:
             return
 
         if self.speech_queue.qsize() > 8:
-            print("[VOICE_ENGINE] Kolejka audio pełna – czyszczę najstarszy wpis.")
             try:
                 self.speech_queue.get_nowait()
                 self.speech_queue.task_done()
@@ -133,37 +407,38 @@ class DiscordVoiceEngine:
         await self.speech_queue.put(clean_speech)
 
     async def _process_queue(self):
-        """Pobiera teksty z kolejki, konwertuje do WAV 48kHz stereo i odtwarza bez blokowania pętli."""
+        """Pobiera teksty z kolejki, konwertuje do WAV 48kHz stereo i odtwarza ciepłym głosem Zofii."""
         while True:
             text = await self.speech_queue.get()
             mp3_path = None
             wav_path = None
             try:
-                # Poczekaj do 3 sekund, jeśli trwa właśnie łączenie z kanałem
                 wait_conn = 0.0
                 while not self.is_connected() and wait_conn < 3.0:
                     await asyncio.sleep(0.2)
                     wait_conn += 0.2
 
                 if not self.is_connected():
-                    print(f"[VOICE_ENGINE] ⚠️ Pominięto mowę (brak połączenia VC): '{text}'")
                     continue
 
-                # Czekaj na zakończenie poprzedniej wypowiedzi (z limitem bezpieczeństwa 35s)
+                # Jeśli gra tylko mowa TTS (nie muzyka), poczekaj aż skończy mówić poprzednie zdanie
                 wait_prev = 0.0
-                while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing() and wait_prev < 35.0:
+                while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing() and not self._is_playing_music and wait_prev < 35.0:
                     await asyncio.sleep(0.15)
                     wait_prev += 0.15
+
+                # Jeśli grała muzyka, a bot ma powiedzieć krótką odpowiedź, zatrzymaj muzykę na czas wypowiedzi
+                if self._is_playing_music and self.voice_client and self.voice_client.is_playing():
+                    self.stop_audio()
+                    await asyncio.sleep(0.2)
 
                 uid = uuid.uuid4().hex[:8]
                 mp3_path = os.path.join(TEMP_AUDIO_DIR, f"tts_{uid}.mp3")
                 wav_path = os.path.join(TEMP_AUDIO_DIR, f"clean_{uid}.wav")
 
-                # 1. Generowanie mowy z Edge-TTS (Ciepły głos ZofiaNeural)
                 communicate = edge_tts.Communicate(text, self.voice_name, rate="+2%", pitch="+0Hz")
                 await communicate.save(mp3_path)
 
-                # 2. Pre-renderowanie do nieskompresowanego PCM 48kHz Stereo WAV (dokładny format Discorda)
                 convert_cmd = [
                     "ffmpeg", "-y",
                     "-i", mp3_path,
@@ -182,16 +457,14 @@ class DiscordVoiceEngine:
                 )
                 await proc.communicate()
 
-                # 3. Odtwarzanie w Discordzie (100% thread-safe bez asyncio.Event z obcego wątku!)
                 if os.path.exists(wav_path) and self.voice_client and self.voice_client.is_connected():
                     print(f"[VOICE_ENGINE] ▶️ Odtwarzanie na VC: '{text}'")
                     source = discord.FFmpegPCMAudio(wav_path)
                     self.voice_client.play(source)
 
-                    # Poczekaj w pętli asyncio aż odtwarzanie się rozpocznie i zakończy
                     await asyncio.sleep(0.2)
                     elapsed = 0.0
-                    while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing() and elapsed < 40.0:
+                    while self.voice_client and self.voice_client.is_connected() and self.voice_client.is_playing() and not self._is_playing_music and elapsed < 40.0:
                         await asyncio.sleep(0.15)
                         elapsed += 0.15
                     print(f"[VOICE_ENGINE] ✅ Zakończono mówienie ({elapsed:.1f}s).")

@@ -45,10 +45,10 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: 🎙️ Instalacja FFmpeg i bibliotek audio Opus
+      - name: 🎙️ Instalacja FFmpeg, FLAC i bibliotek audio Opus
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libopus0 libopus-dev
+          sudo apt-get install -y ffmpeg libopus0 libopus-dev flac
 
       - name: 📦 Instalacja Zależności Pythona
         run: |

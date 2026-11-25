@@ -352,10 +352,17 @@ class MemoryVault:
 
     # --- CIĄGŁA NAUKA ZE ZDAŃ I WIADOMOŚCI ---
 
-    def learn_from_message(self, author_name: str, message_content: str, guild_id: Optional[str] = None, guild_name: Optional[str] = None) -> Optional[str]:
+    def learn_from_message(
+        self,
+        author_name: str,
+        message_content: str,
+        guild_id: Optional[str] = None,
+        guild_name: Optional[str] = None,
+        source: str = "CZAT"
+    ) -> Optional[str]:
         """
-        Analizuje treść wiadomości, uczy się każdego zdania, wychwytuje reguły
-        (np. 'jak ktoś napisze banan to odpisz jabłko') i profile osób.
+        Analizuje treść wiadomości (z CZATU lub ze SŁUCHANIA NA GŁOSOWYM), uczy się
+        każdego zdania, wychwytuje reguły, upodobania ('co kto lubi') i profile osób.
         """
         content = message_content.strip()
         if not content:
@@ -368,46 +375,63 @@ class MemoryVault:
         server_store = self._get_server_store(guild_id, guild_name)
         now_iso = datetime.utcnow().isoformat()
 
-        # 1. PAMIĘĆ KAŻDEGO ZDANIA (Total Conversation Recall)
+        # 1. PAMIĘĆ KAŻDEGO ZDANIA Z CZATU I GŁOSU (Total Conversation Recall)
         if len(content) >= 2 and not content.startswith("!"):
             chat_entry = {
                 "author": author_clean,
+                "source": source,
                 "text": content[:250],
                 "timestamp": now_iso
             }
             server_store["chat_log"].append(chat_entry)
-            # Przechowuj do 200 ostatnich zdań w zaszyfrowanej pamięci
-            if len(server_store["chat_log"]) > 200:
+            # Przechowuj do 250 ostatnich zdań w zaszyfrowanej pamięci
+            if len(server_store["chat_log"]) > 250:
                 server_store["chat_log"].pop(0)
 
-        # 2. Profilowanie rozmówcy na danym serwerze
+        # 2. Profilowanie rozmówcy na danym serwerze (Co kto lubi & Jaki kto jest)
         user_key = author_clean.lower().replace(" ", "_")
         if user_key not in server_store["users"]:
-            # Wykryj powiązania (np. j_janow3kq -> Jagoda)
             canon = author_clean
             if "janow" in user_key or "jagoda" in user_key:
                 canon = "Jagoda"
             elif "szatek" in user_key:
                 canon = "Szatek_Olo"
+            elif "oliwier" in user_key or "basista" in user_key:
+                canon = "Oliwier (Basista)"
 
             server_store["users"][user_key] = {
                 "canonical_name": canon,
                 "roles": ["Członek serwera"],
                 "facts": [],
+                "likes": [],
                 "last_seen": now_iso
             }
         else:
             server_store["users"][user_key]["last_seen"] = now_iso
+            if "likes" not in server_store["users"][user_key]:
+                server_store["users"][user_key]["likes"] = []
+
+        # Automatyczna ekstrakcja "Co kto lubi" z czytania i słuchania
+        like_patterns = [
+            r"(?:lubię|lubie|uwielbiam|kocham|szanuję|słucham|slucham|gram w|mój ulubiony|moj ulubiony)\s+(.+)",
+            r"(?:zaśpiewaj|zaspiewaj|puść|pusc|zagraj)\s+(.+)"
+        ]
+        for lpat in like_patterns:
+            lm = re.search(lpat, content, re.IGNORECASE)
+            if lm:
+                liked_item = lm.group(1).strip()[:80]
+                if len(liked_item) > 2 and self._is_safe_fact(liked_item):
+                    u_likes = server_store["users"][user_key]["likes"]
+                    if liked_item not in u_likes:
+                        u_likes.append(liked_item)
+                        if len(u_likes) > 12:
+                            u_likes.pop(0)
 
         # 3. WYKRYWANIE UCZENIA REGUŁ: "jak ktoś napisze X to odpisz Y" lub "na X odpisuj Y"
         rule_patterns = [
-            # "jak ktoś napisze banan to odpisz jabłko" / "jak ktoś powie X to napisz Y"
             r"(?:naucz się:?\s*)?(?:jak|gdy|kiedy)\s+(?:ktoś\s+|ktos\s+)?(?:napisze|powie|zapyta|wpisze)\s+(.+?)\s+to\s+(?:odpisz|odpowiedz|napisz|odpowiadaj|odpisuj)\s+(.+)",
-            # "na banan odpisuj jabłko" / "na banan napisz jabłko"
             r"(?:naucz się:?\s*)?na\s+(.+?)\s+(?:odpisuj|odpisz|odpowiadaj|odpowiedz|napisz)\s+(.+)",
-            # "zawsze na banan odpowiadaj jabłko"
             r"zawsze\s+na\s+(.+?)\s+(?:odpowiadaj|odpowiedz|odpisz)\s+(.+)",
-            # "!naucz banan => jabłko"
             r"^!naucz\s+([^=->]+)\s*(?:=>|=|->)\s*(.+)$"
         ]
 
@@ -438,12 +462,12 @@ class MemoryVault:
                 server_store["facts"].append({
                     "id": new_id,
                     "content": fact_text,
-                    "added_by": author_clean,
+                    "added_by": f"{author_clean} ({source})",
                     "timestamp": now_iso
                 })
                 self._save_vault()
                 self.sync_to_github()
-                return f"Zakodowałem i zapamiętałem na stałe: \"{fact_text}\" 🧠"
+                return f"Zakodowałem w pamięci Polskiego ChatGPT: \"{fact_text}\" 🧠"
 
         if any(c_low.endswith(suf) for suf in ["zakoduj", "zakodować", "zakodowac", "zapamiętaj", "zapamietaj"]):
             fact_text = re.sub(r"\s*(?:,?\s*)?(?:zakoduj|zakodować|zakodowac|zapamiętaj|zapamietaj)\s*$", "", content, flags=re.IGNORECASE).strip()
@@ -452,25 +476,42 @@ class MemoryVault:
                 server_store["facts"].append({
                     "id": new_id,
                     "content": fact_text,
-                    "added_by": author_clean,
+                    "added_by": f"{author_clean} ({source})",
                     "timestamp": now_iso
                 })
                 self._save_vault()
                 self.sync_to_github()
-                return f"Zakodowałem w pamięci serwera: \"{fact_text}\" 🧠"
+                return f"Zakodowałem w pamięci Polskiego ChatGPT: \"{fact_text}\" 🧠"
 
-        # 5. Definicje ("X to jest Y", "X to Y", "X oznacza Y")
+        # 5. Definicje i relacje ("X to jest Y", "X oznacza Y", oraz proste deklaracje "Oliwier to Basista")
         if " to jest " in c_low or " oznacza " in c_low:
             split_word = " to jest " if " to jest " in c_low else " oznacza "
             parts = content.split(split_word, 1)
-            if len(parts) == 2 and 2 < len(parts[0].strip()) < 35 and 3 < len(parts[1].strip()) < 200:
+            if len(parts) == 2 and 2 < len(parts[0].strip()) < 35 and 2 < len(parts[1].strip()) < 200:
                 term = parts[0].strip()
                 definition = parts[1].strip()
-                if self._is_safe_fact(term) and self._is_safe_fact(definition):
+                if "?" not in content and not any(term.lower().startswith(q) for q in ["kto", "co", "czy", "jak", "gdzie"]) and self._is_safe_fact(term) and self._is_safe_fact(definition):
                     server_store["definitions"][term] = definition
                     self._save_vault()
                     self.sync_to_github()
-                    return f"Nauczyłem się definicji pojęcia \"{term}\": {definition} 📖"
+                    return f"Zapisałem w Polskim ChatGPT definicję \"{term}\": {definition} 📖"
+
+        # Wykrywanie zwięzłych twierdzeń "X to Y" (np. "Oliwier to Basista") bez znaku zapytania
+        if " to " in c_low and "?" not in content and len(content.split()) <= 6:
+            if not any(c_low.startswith(q) for q in ["kto ", "co ", "czy ", "jak ", "gdzie ", "kiedy ", "jaka ", "jaki ", "a kto", "a co"]):
+                parts = re.split(r"\s+to\s+", content, maxsplit=1, flags=re.IGNORECASE)
+                if len(parts) == 2 and 2 <= len(parts[0].strip()) <= 25 and 2 <= len(parts[1].strip()) <= 60:
+                    term, val = parts[0].strip(), parts[1].strip()
+                    if self._is_safe_fact(term) and self._is_safe_fact(val):
+                        server_store["definitions"][term] = val
+                        server_store["facts"].append({
+                            "id": len(server_store["facts"]) + 1,
+                            "content": f"{term} to {val}",
+                            "added_by": f"{author_clean} ({source})",
+                            "timestamp": now_iso
+                        })
+                        self._save_vault()
+                        self.sync_to_github()
 
         # 6. Informacje o sobie ("jestem...", "nazywam się...")
         if c_low.startswith("jestem ") or c_low.startswith("nazywam się ") or c_low.startswith("mów mi "):
@@ -483,7 +524,7 @@ class MemoryVault:
                         user_prof["facts"].pop(0)
                     self._save_vault()
                     self.sync_to_github()
-                    return f"Zapisałem fakt o Tobie ({author_clean}): {fact_about_self} 💡"
+                    return f"Zapisałem fakt o Tobie ({author_clean}) w Polskim ChatGPT: {fact_about_self} 💡"
 
         self._save_vault()
         return None
@@ -560,8 +601,8 @@ class MemoryVault:
 
     def build_context_for_prompt(self, author_name: str, query_text: str, guild_id: Optional[str] = None, guild_name: Optional[str] = None) -> str:
         """
-        Buduje kompleksową kapsułkę wiedzy dla modelu AI, łącząc fakty,
-        tożsamości osób, historię zdań i reguły.
+        Buduje pełną kapsułkę wiedzy ze wszystkich wiadomości (z czatu i z głosu),
+        tożsamości osób, upodobań ('co kto lubi') i reguł dla Polskiego ChatGPT.
         """
         server_store = self._get_server_store(guild_id, guild_name)
         user_key = author_name.lower().replace(" ", "_")
@@ -575,32 +616,58 @@ class MemoryVault:
         if szatek:
             parts.append(f"Twój dowódca i stwórca: {szatek.get('canonical_name', 'Szatek_Olo')} ({', '.join(szatek.get('roles', []))})")
 
-        parts.append("Kluczowi przyjaciele serwera:\n• Jagoda (j_janow3kq) – przyjaciółka Szatka, testerka bota.\n• Basista – członek ekipy, gracz i basista.")
+        parts.append(
+            "Kluczowi członkowie ekipy (Co o każdym wiadomo):\n"
+            "• Szatek_Olo (szatek_010) – Prezes ZSC, dowódca jednostki SZAT, główny twórca bota. Lubi Metallicę (Master of Puppets), budowanie i rozwijanie AI.\n"
+            "• Jagoda (j_janow3kq / Janow) – przyjaciółka Szatka, testerka bota. Lubi puszczać muzykę przez Jockie Music (np. Popek – Mamo Tato) i żartować na VC.\n"
+            "• Oliwier (Basista) – znany gracz i członek ekipy, człowiek od basu i dobrego klimatu na serwerze."
+        )
+
+        # Dynamiczne profile wszystkich poznanych użytkowników na serwerze
+        if server_store.get("users"):
+            u_lines = []
+            for uk, ud in server_store["users"].items():
+                cname = ud.get("canonical_name", uk)
+                likes = ud.get("likes", [])
+                facts = ud.get("facts", [])
+                info_bits = []
+                if likes:
+                    info_bits.append(f"lubi/pytał o: {', '.join(likes[-4:])}")
+                if facts:
+                    info_bits.append(f"fakty: {'; '.join(facts[-3:])}")
+                if info_bits:
+                    u_lines.append(f"• {cname}: {' | '.join(info_bits)}")
+            if u_lines:
+                parts.append("Wyuczone profile użytkowników z wiadomości i głosu:\n" + "\n".join(u_lines))
 
         # Rozmówca
         if user_info:
-            parts.append(f"Rozmawiasz z użytkownikiem: {user_info.get('canonical_name', author_name)}")
-            if user_info.get("facts"):
-                parts.append(f"- Zapamiętane fakty o rozmówcy: {'; '.join(user_info['facts'][:5])}")
+            parts.append(f"Aktualnie rozmawiasz z: {user_info.get('canonical_name', author_name)}")
         else:
-            parts.append(f"Rozmawiasz z użytkownikiem: {author_name}")
+            parts.append(f"Aktualnie rozmawiasz z: {author_name}")
 
         # Wyuczone reguły
         rules = server_store.get("rules", {})
         if rules:
-            r_str = ", ".join([f"'{k}'->'{v['response']}'" for k, v in list(rules.items())[:6]])
-            parts.append(f"Wyuczone reguły na serwerze: {r_str}")
+            r_str = ", ".join([f"'{k}'->'{v['response']}'" for k, v in list(rules.items())[:8]])
+            parts.append(f"Wyuczone reguły reakcji na serwerze: {r_str}")
 
         # Fakty tego konkretnego serwera
-        server_facts = server_store.get("facts", [])[-6:]
+        server_facts = server_store.get("facts", [])[-10:]
         if server_facts:
             facts_list = [f"• {f['content']}" for f in server_facts]
-            parts.append("Zapamiętane fakty i ustalenia na tym serwerze:\n" + "\n".join(facts_list))
+            parts.append("Zakodowane fakty i ustalenia na tym serwerze:\n" + "\n".join(facts_list))
 
         # Definicje
         if server_store.get("definitions"):
-            defs = [f"• {k}: {v}" for k, v in list(server_store["definitions"].items())[:6]]
-            parts.append("Znane definicje na tym serwerze:\n" + "\n".join(defs))
+            defs = [f"• {k}: {v}" for k, v in list(server_store["definitions"].items())[:8]]
+            parts.append("Znane definicje i powiązania:\n" + "\n".join(defs))
+
+        # Ostatnie zapisane wypowiedzi z czatu i kanału głosowego
+        recent_log = server_store.get("chat_log", [])[-15:]
+        if recent_log:
+            log_lines = [f"[{e.get('source', 'CZAT')}] {e.get('author')}: {e.get('text')}" for e in recent_log]
+            parts.append("Ostatnie przeanalizowane wypowiedzi z serwera (CZAT + GŁOS):\n" + "\n".join(log_lines))
 
         return "\n\n".join(parts)
 
