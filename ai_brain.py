@@ -539,7 +539,7 @@ class AIBrain:
         """
         Głęboka, kontekstowa odpowiedź Polskiego ChatGPT – NIGDY nie mówi w kółko o puszczaniu muzyki,
         rozumie kim jest Mamusia, wie o czym rozmawialiśmy, i odpowiada dokładnie na temat!
-        Jeśli nie zrozumie: pyta 'Nie rozumiem {author_name} co mówisz, możesz powtórzyć?'.
+        Zawsze udziela aktywnej, inteligentnej odpowiedzi – NIGDY nie mówi 'Nie rozumiem'.
         """
         msg_low = user_message.lower().strip()
         msg_clean = re.sub(r"[!?,.\"\']", " ", msg_low).strip()
@@ -573,19 +573,39 @@ class AIBrain:
                 return "Ojej, Jagoda dużo zdrówka! 🍵 Odpoczywaj pod kocykiem, pij ciepłą herbatkę i wracaj szybko do sił! 🌸"
             return f"Ojej {author_name}, dużo zdrówka! Odpoczywaj, pij ciepłą herbatę i wracaj szybko do pełni sił! 🍵"
 
-        # 5. Co wiesz o serwerze / czego się nauczyłeś (zamiast zmyślać 150 osób)
-        if any(p in msg_clean for p in [
+        # 5a. Zarządzanie / usuwanie pamięci ("usuń informacje", "skasuj pamięć")
+        if any(p in msg_clean for p in ["usuń", "usun", "skasuj", "wyczyść", "wyczysc", "zapomnij"]) and not any(p in msg_clean for p in ["nie masz usuwać", "nie masz usuwac", "nie usuwaj"]):
+            return (
+                f"Zrozumiałem {author_name}! Główne fakty tożsamościowe (o Szatku, Jagodzie i Oliwierze) oraz zasady ZSC są trwale chronione, "
+                f"aby bot nie stracił rozumu. Bieżące logi rozmów i pamięć podręczną możemy wyczyścić komendą administratorską. "
+                f"Co dokładnie z dzisiejszego dnia chciałbyś zmodyfikować?"
+            )
+
+        # 5b. Podsumowanie serwera / czego się nauczyłeś / relacje i wiedza o ludziach
+        summary_triggers = [
+            "podsumuj", "podsumowanie", "co zapamiętałeś", "co zapamietales",
+            "jak kogo nazywasz", "kim dla kogo", "kto kim jest", "kto jest kim",
             "czego się nauczyłeś", "czego sie nauczyles", "co wiesz o tym serwerze", "co wiesz o serwerze",
-            "powiedz czego dzisiaj", "czego dzisiaj", "co wiesz o nas"
-        ]):
+            "powiedz czego dzisiaj", "czego dzisiaj", "co dzisiaj się stało", "co dzisiaj sie stalo",
+            "co dziś zaplanowałeś", "co dzis zaplanowales", "co wiesz o nas", "co zapisałeś", "co zapisales",
+            "co wiesz o", "podsumuj informacje"
+        ]
+        if any(p in msg_clean for p in summary_triggers):
             facts_count = len(facts)
             chat_count = len(chat_log)
+            recent_topics = ""
+            if chat_log:
+                topics_sample = [f"• {e.get('author')}: \"{e.get('text')[:60]}\"" for e in chat_log[-4:]]
+                recent_topics = "\n\n**Ostatnie wątki na serwerze:**\n" + "\n".join(topics_sample)
             return (
-                f"Znam nasz serwer od podszewki! 🧠\n"
-                f"• **Szatek_Olo** – mój twórca, Prezes ZSC i dowódca jednostki SZAT 👑\n"
-                f"• **Jagoda** (`j_janow3kq`) – nasza zgrana ekipa i Mamusia serwera 🌸\n"
-                f"• **Oliwier (Basista)** – nasz mistrz basu i dobrego klimatu 🎸\n"
-                f"Mam w pamięci **{facts_count} zakodowanych faktów** oraz **{chat_count} zapisanych wypowiedzi** z naszych rozmów!"
+                f"Oto pełne podsumowanie serwera i tego, co wiem o naszej ekipie! 🧠\n\n"
+                f"👑 **Szatek_Olo (Olek)** – mój twórca, Prezes ZSC i dowódca jednostki SZAT. Rządzi serwerem, tworzy projekty i słucha klasyków rocka/metalu (Metallica)!\n"
+                f"🌸 **Jagoda (`j_janow3kq` / Janow)** – nasza serwerowa **Mamusia** (jak sam ustalił Szatek!), zaufana testerka bota i kumpela z ekipy ZSC o świetnym poczuciu humoru.\n"
+                f"🎸 **Oliwier (Basista)** – nasz człowiek od gitary basowej, wspólnych gierek (VRChat) i dobrego klimatu na kanale!\n\n"
+                f"**Relacje:**\n"
+                f"• Dla Szatka Jagoda jest zaufaną testerką i Mamusią serwera, a Oliwier kompanem od gierek.\n"
+                f"• Dla mnie Szatek_Olo to stwórca i szef, a wszyscy jesteście zgraną ekipą ZSC.\n\n"
+                f"📊 **Stan bazy:** Mam w pamięci **{facts_count} zakodowanych faktów** oraz **{chat_count} zapisanych wypowiedzi**.{recent_topics}"
             )
 
         # 6. Raport / analiza serwera w 4 przykładach ("przeczytaj raport", "wykonaj raport", "raport")
@@ -695,8 +715,13 @@ class AIBrain:
         if any(p in msg_clean for p in ["źle mówisz", "zle mowisz", "nie tak bot", "nie o to chodziło", "nie o to chodzilo"]):
             return f"Rozumiem {author_name}, mój błąd! Przyjmuję poprawkę i już to koryguję w pamięci. Powiedz jak powinno być!"
 
-        # 18. Zawołanie bota ("panie bocie", "ej bot", "halo bot")
-        if any(w in msg_clean for w in ["panie bocie", "halo bot", "ej bot", "aether", "eder", "bocie"]):
+        # 18. Zawołanie bota ("panie bocie", "ej bot", "halo bot", "eder słyszysz mnie")
+        is_wake_word = any(w in msg_clean for w in ["panie bocie", "halo bot", "ej bot", "aether", "eder", "eter", "bocie"])
+        has_command_intent = any(v in msg_clean for v in [
+            "usuń", "usun", "skasuj", "podsumuj", "powiedz", "pokaż", "pokaz", "sprawdź", "sprawdz",
+            "zrób", "zrob", "wytłumacz", "wytlumacz", "co", "jak", "dlaczego", "kto", "kim", "gdzie"
+        ])
+        if is_wake_word and (len(words) <= 4 or "słyszysz" in msg_clean or "slyszysz" in msg_clean) and not has_command_intent:
             return f"Jestem {author_name}, słyszę Cię głośno i wyraźnie! Co tam na tapecie w ZSC?"
 
         # 19. Luźne odzywki ("co tam gołąbeczku", "ja nie myślę", "nie pytałam")
@@ -705,8 +730,32 @@ class AIBrain:
         if any(p in msg_clean for p in ["ja nie myślę", "ja nie mysle", "nie pytałam", "nie pytalam", "nie pytałem", "nie pytalem"]):
             return f"Haha, luzik {author_name}, pełen chillout! Słucham w tle i nie przeszkadzam, zawołajcie jak będę potrzebny! 😎"
 
-        # 20. Jeśli bot nie zrozumiał lub wypowiedź jest niejasna / niewyraźna
-        return f"Nie rozumiem {author_name} co mówisz, możesz powtórzyć?"
+        # 20. Znane pojęcia, światy, gry i technologie (Arda, Siemens, Minecraft, VRChat, etc.)
+        c_clean_word = re.sub(r"[\[\](){},.!?:;\"']", "", user_message).strip().lower()
+        if "arda" in c_clean_word:
+            return f"Arda to fantastyczny świat i całe legendarne uniwersum Tolkiena (Władca Pierścieni, Śródziemie, Silmarillion)! 🌍 O co dokładnie pytasz w temacie Ardy, {author_name}?"
+        if "siemens" in c_clean_word:
+            return f"Siemens – klasyk inżynierii, automatyki i sterowników PLC! ⚙️ Co tam kombinujesz z Siemensem, {author_name}?"
+        if "minecraft" in c_clean_word:
+            return f"Minecraft – klocki, survival i kreatywny świat! Gramy w coś na serwerze, {author_name}? ⛏️"
+        if "vrchat" in c_clean_word or "vr chat" in c_clean_word:
+            return f"VRChat – nasza ekipa uwielbia tam wbijać, zwłaszcza Oliwier (Basista)! Co tam ciekawego w VR? 🥽"
+        if "metallica" in c_clean_word:
+            return f"Metallica – mocne brzmienia i ulubione kawałki Szatka, jak Master of Puppets! 🎸"
+
+        # 21. Dynamiczna, inteligentna odpowiedź na KAŻDE dowolne hasło/słowo (NIGDY 'nie rozumiem'!)
+        all_words = re.findall(r"\b[a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ_]+\b", user_message)
+        if all_words:
+            keyword = " ".join(all_words[:3])
+            templates = [
+                f"Słyszę Cię {author_name}! Co tam dokładnie masz na myśli z '{keyword}'?",
+                f"Jestem na bieżąco {author_name}! '{keyword}' – rozwiń to śmiało, chętnie pogadam na ten temat!",
+                f"Znam sprawę {author_name}! O co dokładnie pytasz w temacie '{keyword}'?",
+                f"Ooo, ciekawy wątek {author_name}! Co planujesz z '{keyword}' na serwerze?"
+            ]
+            return random.choice(templates)
+
+        return f"Jestem z Wami {author_name}, słucham uważnie! Co tam działamy na serwerze?"
 
     async def _call_groq(self, messages: List[Dict[str, str]], is_voice: bool = False) -> Optional[str]:
         if httpx is None or not self.groq_api_key:
@@ -784,6 +833,10 @@ class AIBrain:
                     "parts": [{"text": raw_text}]
                 })
 
+        # Upewnij się, że pierwsza tura należy do użytkownika (bezwzględny wymóg Gemini generateContent)
+        while contents and contents[0]["role"] != "user":
+            contents.pop(0)
+
         if not contents:
             return None
 
@@ -804,7 +857,13 @@ class AIBrain:
         }
 
         # Sprawdź kolejno najszybsze i najinteligentniejsze wersje Flash
-        models = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
+        models = [
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-latest",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-exp",
+            "gemini-1.5-pro"
+        ]
         for model in models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.gemini_api_key}"
             try:
@@ -817,10 +876,8 @@ class AIBrain:
                             parts = candidates[0].get("content", {}).get("parts", [])
                             if parts and "text" in parts[0]:
                                 return parts[0]["text"].strip()
-                    elif resp.status_code == 404:
-                        continue
                     else:
-                        break
+                        continue
             except Exception:
-                pass
+                continue
         return None

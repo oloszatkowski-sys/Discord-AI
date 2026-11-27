@@ -593,34 +593,57 @@ class MemoryVault:
         if any(w in q_clean for w in ["zakoduj", "zakodowac", "zakodować", "zapamiętaj", "zapamietaj", "naucz się", "naucz sie", "odpisz", "odpisuj"]):
             return None
 
+        # Jeśli użytkownik prosi o usunięcie informacji / skasowanie pamięci
+        if any(p in q_clean for p in ["usuń", "usun", "skasuj", "wyczyść", "wyczysc"]) and not any(p in q_clean for p in ["nie masz usuwać", "nie masz usuwac", "nie usuwaj"]):
+            return (
+                f"Zrozumiałem {author_name}! Główne fakty tożsamościowe (o Szatku, Jagodzie i Oliwierze) oraz zasady ZSC są trwale chronione, "
+                f"aby bot nie stracił rozumu. Bieżące logi rozmów i pamięć podręczną możemy wyczyścić komendą administratorską. "
+                f"Co dokładnie z dzisiejszego dnia chciałbyś zmodyfikować?"
+            )
+
         server_store = self._get_server_store(guild_id, guild_name)
         global_lore = self.data.get("global_lore", {})
 
-        # Pytanie: "Co wiesz o nas?" / "Co o nas wiesz?" / "Co pamiętasz?"
-        if any(p in q_clean for p in ["co wiesz o nas", "co o nas wiesz", "co wiesz o serwerze", "co pamiętasz", "co pamietasz", "co wiesz o ekipie"]):
-            lines = [f"Wiem o Was całkiem sporo! 🧠 Jesteśmy na serwerze **{server_store.get('guild_name', 'ZSC')}**."]
+        # Pytanie: "Podsumuj informacje o serwerze...", "Co pamiętasz?", "Co wiesz?", "Jak kogo nazywasz?", "Kim dla kogo kto jest?"
+        summary_triggers = [
+            "podsumuj", "podsumowanie", "co wiesz o nas", "co o nas wiesz", "co wiesz o serwerze", "co wiesz o tym serwerze",
+            "co pamiętasz", "co pamietasz", "co zapamiętałeś", "co zapamietales", "co wiesz o ekipie",
+            "jak kogo nazywasz", "kim dla kogo", "kto kim jest", "kto dla kogo", "co dziś zaplanowałeś", "co dzis zaplanowales",
+            "co dzisiaj się stało", "co dzisiaj sie stalo", "co się stało", "co sie stalo"
+        ]
+        if any(p in q_clean for p in summary_triggers):
+            lines = [f"Oto pełne podsumowanie serwera **{server_store.get('guild_name', 'ZSC')}** i tego, co zapamiętałem! 🧠"]
+            lines.append("\n**👑 Kto kim jest i jak kogo nazywam:**")
             szatek = global_lore.get("szatek_olo", {})
             if szatek:
-                lines.append(f"• **{szatek.get('canonical_name')}** – Mój stwórca i dowódca ({', '.join(szatek.get('roles', []))}).")
+                lines.append(f"• **Szatek_Olo (Olek)** – Mój stwórca i dowódca jednostki SZAT ({', '.join(szatek.get('roles', []))})! Najważniejszy lider ekipy ZSC.")
             jagoda = global_lore.get("jagoda", {})
             if jagoda:
-                lines.append(f"• **{jagoda.get('canonical_name')}** – {jagoda.get('facts', ['Nasza kumpela'])[0]}")
+                lines.append(f"• **Jagoda (`j_janow3kq` / `Janow`)** – Nasza zaufana testerka bota i super kumpela (nasza serwerowa **Mamusia** – sam tak ustaliłeś, Szatek!)! 🌸")
             basista = global_lore.get("basista", {})
             if basista:
-                lines.append(f"• **Oliwier (Basista)** – {basista.get('facts', ['Nasz gracz'])[0]}")
+                lines.append(f"• **Oliwier (Basista)** – Nasz człowiek od basu, gier i dobrego serwerowego klimatu! 🎸")
+
+            lines.append("\n**🤝 Relacje między Wami:**")
+            lines.append("• **Jagoda dla Olka (Szatka):** Serwerowa Mamusia, przyjaciółka z ekipy i główna testerka bota.")
+            lines.append("• **Szatek dla Jagody:** Prezes ZSC, dowódca i stwórca bota.")
+            lines.append("• **Oliwier dla ekipy:** Zgrany kumpel od grania na basie i wspólnych gier.")
 
             # Wyuczone reguły
             rules = server_store.get("rules", {})
             if rules:
-                rule_examples = [f"'{k}' ➔ '{v['response']}'" for k, v in list(rules.items())[:3]]
-                lines.append(f"• Pamiętam też Wasze wyuczone reguły, np: {', '.join(rule_examples)}.")
+                rule_examples = [f"'{k}' ➔ '{v['response']}'" for k, v in list(rules.items())[:5]]
+                lines.append(f"\n**💡 Wyuczone reguły reakcji ({len(rules)}):**\n• {', '.join(rule_examples)}")
 
             # Zapamiętane fakty
             facts = server_store.get("facts", [])
             if facts:
-                lines.append(f"• Mam zapisane {len(facts)} ważnych faktów i ustaleń.")
+                recent_facts = [f"• {f['content']}" for f in facts[-4:]]
+                lines.append(f"\n**📌 Zapamiętane fakty ({len(facts)}):**\n" + "\n".join(recent_facts))
 
-            lines.append("Wszystko mam bezpiecznie zaszyfrowane i zabezpieczone na GitHubie! 🛡️")
+            # Statystyki rozmów
+            chat_log = server_store.get("chat_log", [])
+            lines.append(f"\nPrzeanalizowałem **{len(chat_log)} wypowiedzi** z czatu i kanału głosowego. Wszystko mam bezpiecznie zaszyfrowane w Skarbcu Pamięci! 🛡️")
             return "\n".join(lines)
 
         # Sprawdzenie relacji personalnych (np. "Kim jestem dla Olka?", "Kim Jagoda jest dla mnie?", "Kim Jagoda jest dla Olka?")
